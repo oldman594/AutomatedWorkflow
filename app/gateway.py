@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from typing import Any
 
@@ -9,6 +10,7 @@ from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from app.auth import authenticate_runner
 from app.config import Settings
 from app.models import JobStatus, RunnerRegistration, Stage, TaskStatus
+from app.observability import RUNNER_CONNECTIONS
 from app.protocol import MessageEnvelope, MessageType
 from app.storage import Storage
 
@@ -348,7 +350,14 @@ async def run_runner_websocket(websocket: WebSocket, storage: Storage, settings:
         await websocket.close(code=1008, reason="Invalid runner token")
         return
     await websocket.accept()
+    RUNNER_CONNECTIONS.inc()
+    logging.getLogger("autoflow.gateway").info("runner.connected", extra={"runner_id": runner_id})
     try:
         await RunnerGatewaySession(websocket, storage, settings, runner_id, project_id).run()
     except (TimeoutError, WebSocketDisconnect):
         return
+    finally:
+        RUNNER_CONNECTIONS.dec()
+        logging.getLogger("autoflow.gateway").info(
+            "runner.disconnected", extra={"runner_id": runner_id}
+        )

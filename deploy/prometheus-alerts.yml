@@ -1,0 +1,29 @@
+groups:
+  - name: autoflow
+    rules:
+      - alert: AutoFlowTaskRetriesExhausted
+        expr: increase(autoflow_task_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: AutoFlow task exhausted all retries
+
+      - alert: AutoFlowHighHttpErrorRate
+        expr: |
+          sum(rate(autoflow_http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(autoflow_http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: AutoFlow HTTP 5xx rate exceeds 5 percent
+
+      - alert: AutoFlowQueueBacklog
+        expr: sum(autoflow_job_queue_depth{status="pending"}) > 20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: AutoFlow task queue is not draining

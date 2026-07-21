@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     message_retention_days: int = 14
     execution_retention_days: int = 90
     worktree_retention_days: int = 30
+    log_level: str = "INFO"
+    metrics_token: SecretStr | None = None
+    otel_service_name: str = "autoflow"
+    otel_exporter_otlp_endpoint: str | None = None
+    alert_webhook_url: str | None = None
+    alert_timeout_seconds: float = 5.0
     sandbox_mode: SandboxMode = "docker"
     sandbox_image: str = "autoflow-sandbox:latest"
     sandbox_network: str = "none"

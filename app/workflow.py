@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import traceback
 from pathlib import Path
@@ -141,6 +142,9 @@ class WorkflowEngine:
             self.storage.update_task(task_id, status=TaskStatus.CANCELLED, error=None)
             self.storage.add_event(task_id, "任务已取消", level="warning")
         except Exception as exc:
+            logging.getLogger("autoflow.workflow").exception(
+                "workflow.failed", extra={"task_id": task_id, "error": str(exc)}
+            )
             self.storage.update_task(task_id, status=TaskStatus.FAILED, error=str(exc))
             self.storage.add_event(
                 task_id,

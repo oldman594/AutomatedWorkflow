@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import socket
 import threading
 import uuid
 
+from app.alerts import AlertDispatcher
 from app.config import Settings
 from app.models import JobStatus, TaskStatus
+from app.observability import TASK_FAILURES
 from app.storage import Storage
 from app.workflow import WorkflowEngine
 
@@ -16,10 +19,12 @@ class DurableTaskWorker:
         settings: Settings,
         storage: Storage,
         engine: WorkflowEngine,
+        alerts: AlertDispatcher,
     ) -> None:
         self.settings = settings
         self.storage = storage
         self.engine = engine
+        self.alerts = alerts
         self.worker_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
         self.stop_event = threading.Event()
         self.threads: list[threading.Thread] = []
@@ -44,15 +49,26 @@ class DurableTaskWorker:
             thread.join(timeout=5)
         self.threads.clear()
 
+    def is_healthy(self) -> bool:
+        return bool(self.threads) and all(thread.is_alive() for thread in self.threads)
+
     def _run_loop(self, owner: str) -> None:
         while not self.stop_event.is_set():
             job = self.storage.lease_job("server", owner, self.settings.job_lease_seconds)
             if job is None:
                 self.stop_event.wait(0.5)
                 continue
-            self._execute_job(job.task_id, owner)
+            logging.getLogger("autoflow.worker").info(
+                "job.leased",
+                extra={
+                    "task_id": job.task_id,
+                    "job_target": job.target,
+                    "attempt": job.attempts,
+                },
+            )
+            self._execute_job(job.task_id, job.target, owner)
 
-    def _execute_job(self, task_id: str, owner: str) -> None:
+    def _execute_job(self, task_id: str, target: str, owner: str) -> None:
         renew_stop = threading.Event()
         renewer = threading.Thread(
             target=self._renew_loop,
@@ -76,6 +92,14 @@ class DurableTaskWorker:
                         task_id,
                         "持久化 Worker 已安排自动重试",
                         level="warning",
+                    )
+                else:
+                    TASK_FAILURES.labels(target).inc()
+                    self.alerts.notify(
+                        "task.retry_exhausted",
+                        task_id=task_id,
+                        job_target=target,
+                        error=task.error,
                     )
             elif task.status == TaskStatus.CANCELLED:
                 self.storage.complete_job(task_id, owner, JobStatus.CANCELLED)

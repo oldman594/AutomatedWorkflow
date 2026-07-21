@@ -12,3 +12,5 @@ htmlcov/
 data/*.db
 data/*.db-*
 worktrees/
+backups/
+deploy/metrics-token

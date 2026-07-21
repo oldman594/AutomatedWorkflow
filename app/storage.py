@@ -52,6 +52,19 @@ class Storage:
     def close(self) -> None:
         self.database.dispose()
 
+    def ping(self) -> bool:
+        with self._connect() as db:
+            row = db.execute("SELECT 1 AS ok").fetchone()
+        return row is not None and int(row["ok"]) == 1
+
+    def job_status_counts(self) -> list[tuple[str, str, int]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT target, status, COUNT(*) AS count FROM jobs
+                GROUP BY target, status"""
+            ).fetchall()
+        return [(str(row["target"]), str(row["status"]), int(row["count"])) for row in rows]
+
     def create_task(self, request: TaskCreate, default_model: str) -> Task:
         task_id = uuid.uuid4().hex[:12]
         now = utc_now()

@@ -58,5 +58,19 @@ services:
     volumes:
       - ./backups:/backups
 
+  prometheus:
+    image: prom/prometheus:v3.8.1
+    profiles: [observability]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus-alerts.yml:/etc/prometheus/autoflow-alerts.yml:ro
+      - ${AUTOFLOW_METRICS_TOKEN_FILE:-./deploy/metrics-token.example}:/etc/prometheus/metrics-token:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
 volumes:
   postgres-data:
+  prometheus-data:

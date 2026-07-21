@@ -108,6 +108,24 @@ autoflow-maintenance cleanup
 
 清理任务仅删除过期会话、协议审计消息，以及终态任务的中间事件、Artifact 和受控 worktree；`delivery`、Commit 和 MR 描述会保留。Compose 生产模板默认启用 PostgreSQL 持久卷和健康检查，可通过 `docker compose --profile maintenance run --rm maintenance` 创建备份。
 
+## 可观测性与告警
+
+服务日志使用单行 JSON，HTTP 请求自动携带或生成 `X-Request-ID`，并在日志中关联 OpenTelemetry `trace_id`。`GET /api/ready` 同时检查数据库和持久化 Worker；`GET /metrics` 导出 HTTP 延迟、状态码、队列深度、任务最终失败和 Runner WebSocket 连接指标。
+
+生产环境应保护指标端点并配置 OTLP Collector：
+
+```dotenv
+AUTOFLOW_METRICS_TOKEN=单独生成的监控令牌
+AUTOFLOW_OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318/v1/traces
+AUTOFLOW_ALERT_WEBHOOK_URL=https://alert-gateway.example.com/hooks/autoflow
+```
+
+当任务耗尽持久化重试次数时，告警由独立后台线程发送，不阻塞任务 Worker。Prometheus 规则位于 `deploy/prometheus-alerts.yml`，覆盖最终失败、HTTP 5xx 比例和队列积压。使用内置模板启动 Prometheus：
+
+```bash
+docker compose --profile observability up -d prometheus
+```
+
 ## 快速启动
 
 需要 Python 3.11+、Git 和 ripgrep。
@@ -240,6 +258,11 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_MESSAGE_RETENTION_DAYS` | `14` | Runner 协议审计消息保留天数 |
 | `AUTOFLOW_EXECUTION_RETENTION_DAYS` | `90` | 终态任务中间执行数据保留天数 |
 | `AUTOFLOW_WORKTREE_RETENTION_DAYS` | `30` | 终态任务 worktree 保留天数 |
+| `AUTOFLOW_LOG_LEVEL` | `INFO` | JSON 日志级别 |
+| `AUTOFLOW_METRICS_TOKEN` | 空 | `/metrics` Bearer Token |
+| `AUTOFLOW_OTEL_SERVICE_NAME` | `autoflow` | OpenTelemetry 服务名 |
+| `AUTOFLOW_OTEL_EXPORTER_OTLP_ENDPOINT` | 空 | OTLP HTTP Trace 上报地址 |
+| `AUTOFLOW_ALERT_WEBHOOK_URL` | 空 | 最终失败异步告警地址 |
 | `AUTOFLOW_MAX_CONTEXT_CHARS` | `80000` | 单阶段代码上下文字符上限 |
 | `AUTOFLOW_MAX_DOWNLOAD_BYTES` | `104857600` | 交付 ZIP 内文件总大小上限 |
 | `AUTOFLOW_SANDBOX_MODE` | `docker` | 命令执行模式：生产使用 `docker`，可信开发可显式使用 `host` |
