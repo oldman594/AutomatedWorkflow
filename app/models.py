@@ -4,7 +4,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from email_validator import EmailNotValidError, validate_email
+from pydantic import BaseModel, Field, field_validator
 
 
 def utc_now() -> str:
@@ -224,14 +225,36 @@ class User(BaseModel):
     created_at: str
 
 
-class LoginRequest(BaseModel):
+class EmailAddressRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=8, max_length=1024)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        try:
+            return validate_email(value, check_deliverability=False).normalized.lower()
+        except EmailNotValidError as exc:
+            raise ValueError("请输入有效的邮箱地址") from exc
 
 
-class RegistrationRequest(LoginRequest):
-    email: EmailStr = Field(max_length=320)
+class EmailCodeRequest(EmailAddressRequest):
+    pass
+
+
+class EmailCodeVerify(EmailAddressRequest):
+    challenge_id: str = Field(min_length=32, max_length=64, pattern=r"^[a-f0-9]+$")
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class EmailChallenge(BaseModel):
+    challenge_id: str
+    expires_in_seconds: int
+    retry_after_seconds: int
+
+
+class UserCreate(EmailAddressRequest):
     display_name: str = Field(min_length=1, max_length=160)
+    is_admin: bool = False
 
     @field_validator("display_name")
     @classmethod
@@ -240,10 +263,6 @@ class RegistrationRequest(LoginRequest):
         if not normalized:
             raise ValueError("display name cannot be empty")
         return normalized
-
-
-class UserCreate(RegistrationRequest):
-    is_admin: bool = False
 
 
 class ProjectCreate(BaseModel):
@@ -263,8 +282,7 @@ class ProjectAccess(Project):
     role: ProjectRole
 
 
-class ProjectMemberCreate(BaseModel):
-    email: EmailStr = Field(max_length=320)
+class ProjectMemberCreate(EmailAddressRequest):
     role: ProjectRole
 
 

@@ -8,6 +8,8 @@ const state = {
   runners: [],
   projects: [],
   user: null,
+  emailChallenge: null,
+  emailCooldownTimer: null,
 };
 
 const stages = [
@@ -404,22 +406,77 @@ function updateRepositoryPlaceholder() {
   $("#repository-input").placeholder = runner?.roots?.[0] || "/home/user/project";
 }
 
-function showAuthMode(mode) {
-  const registering = mode === "register";
-  $("#auth-title").textContent = registering ? "注册 AutoFlow" : "登录 AutoFlow";
-  $("#login-form").classList.toggle("hidden", registering);
-  $("#register-form").classList.toggle("hidden", !registering);
-  $("#login-tab").classList.toggle("active", !registering);
-  $("#register-tab").classList.toggle("active", registering);
-  $("#login-tab").setAttribute("aria-selected", String(!registering));
-  $("#register-tab").setAttribute("aria-selected", String(registering));
+function showAuthError(message = "") {
+  $("#auth-error").textContent = message;
+  $("#auth-error").classList.toggle("hidden", !message);
+}
+
+function startEmailCooldown(seconds) {
+  const button = $("#send-code-button");
+  clearInterval(state.emailCooldownTimer);
+  let remaining = seconds;
+  const update = () => {
+    button.disabled = remaining > 0;
+    button.textContent = remaining > 0 ? `重新发送 (${remaining}s)` : "重新发送验证码";
+    remaining -= 1;
+    if (remaining < 0) clearInterval(state.emailCooldownTimer);
+  };
+  update();
+  state.emailCooldownTimer = setInterval(update, 1000);
+}
+
+async function requestEmailCode() {
+  const emailInput = $("#auth-email");
+  if (!emailInput.checkValidity()) {
+    emailInput.reportValidity();
+    return;
+  }
+  const button = $("#send-code-button");
+  button.disabled = true;
+  showAuthError();
+  try {
+    const challenge = await api("/auth/email/request", {
+      method: "POST",
+      body: JSON.stringify({ email: emailInput.value }),
+    });
+    state.emailChallenge = { id: challenge.challenge_id, email: emailInput.value };
+    $("#code-step").classList.remove("hidden");
+    $("#auth-code").disabled = false;
+    $("#auth-code").focus();
+    startEmailCooldown(challenge.retry_after_seconds);
+  } catch (error) {
+    showAuthError(error.message);
+    button.disabled = false;
+  }
+}
+
+async function verifyEmailCode() {
+  const codeInput = $("#auth-code");
+  if (!state.emailChallenge || !codeInput.checkValidity()) {
+    codeInput.reportValidity();
+    return;
+  }
+  const button = $("#email-auth-form button[type=submit]");
+  button.disabled = true;
+  showAuthError();
+  try {
+    await api("/auth/email/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        email: state.emailChallenge.email,
+        challenge_id: state.emailChallenge.id,
+        code: codeInput.value,
+      }),
+    });
+    clearInterval(state.emailCooldownTimer);
+    await initializeApplication();
+  } catch (error) {
+    showAuthError(error.message);
+  } finally { button.disabled = false; }
 }
 
 async function initializeApplication() {
   await loadHealth();
-  const registrationDisabled = state.health?.registration_enabled === false;
-  $("#register-tab").classList.toggle("hidden", registrationDisabled);
-  if (registrationDisabled) showAuthMode("login");
   if (state.health?.auth_enabled) {
     try {
       state.user = await api("/auth/me");
@@ -443,41 +500,20 @@ async function initializeApplication() {
 
 document.addEventListener("DOMContentLoaded", () => {
   initIcons(); initializeApplication();
-  $("#login-tab").addEventListener("click", () => showAuthMode("login"));
-  $("#register-tab").addEventListener("click", () => showAuthMode("register"));
-  $("#login-form").addEventListener("submit", async (event) => {
+  $("#send-code-button").addEventListener("click", requestEmailCode);
+  $("#email-auth-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("button[type=submit]");
-    button.disabled = true;
-    try {
-      await api("/auth/login", {
-        method: "POST",
-        body: JSON.stringify(Object.fromEntries(new FormData(form))),
-      });
-      $("#login-error").classList.add("hidden");
-      await initializeApplication();
-    } catch (error) {
-      $("#login-error").textContent = error.message;
-      $("#login-error").classList.remove("hidden");
-    } finally { button.disabled = false; }
+    await verifyEmailCode();
   });
-  $("#register-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const button = form.querySelector("button[type=submit]");
-    const values = Object.fromEntries(new FormData(form));
-    button.disabled = true;
-    try {
-      if (values.password !== values.password_confirmation) throw new Error("两次输入的密码不一致");
-      delete values.password_confirmation;
-      await api("/auth/register", { method: "POST", body: JSON.stringify(values) });
-      $("#register-error").classList.add("hidden");
-      await initializeApplication();
-    } catch (error) {
-      $("#register-error").textContent = error.message;
-      $("#register-error").classList.remove("hidden");
-    } finally { button.disabled = false; }
+  $("#auth-email").addEventListener("input", () => {
+    if (!state.emailChallenge || $("#auth-email").value === state.emailChallenge.email) return;
+    state.emailChallenge = null;
+    clearInterval(state.emailCooldownTimer);
+    $("#send-code-button").disabled = false;
+    $("#send-code-button").textContent = "发送验证码";
+    $("#code-step").classList.add("hidden");
+    $("#auth-code").disabled = true;
+    $("#auth-code").value = "";
   });
   $("#logout-button").addEventListener("click", async () => {
     await api("/auth/logout", { method: "POST" });

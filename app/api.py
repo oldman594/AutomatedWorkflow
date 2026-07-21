@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
+import secrets
+import uuid
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket
@@ -12,11 +15,9 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
 from app.auth import (
-    PASSWORD_HASH,
     SESSION_COOKIE,
     RunnerPrincipal,
     authenticate_runner,
-    authenticate_user,
     create_user_session,
     current_user,
     hash_token,
@@ -26,15 +27,18 @@ from app.auth import (
 )
 from app.config import Settings, get_settings
 from app.credentials import CredentialVault
+from app.email_auth import EmailDeliveryError, SMTPVerificationSender, digest_email_code
 from app.gateway import run_runner_websocket
 from app.git_platform import GitPublisher
 from app.models import (
     ApprovalRequest,
     DeliveryOutput,
+    EmailChallenge,
+    EmailCodeRequest,
+    EmailCodeVerify,
     GitIntegrationCreate,
     GitIntegrationInfo,
     JobStatus,
-    LoginRequest,
     PermissionDecision,
     PermissionRequestRecord,
     ProjectAccess,
@@ -44,7 +48,6 @@ from app.models import (
     ProjectRole,
     PublishRequest,
     PublishResult,
-    RegistrationRequest,
     RunnerArtifactCreate,
     RunnerEventCreate,
     RunnerInfo,
@@ -158,41 +161,115 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
     }
 
 
-@router.post("/auth/login", response_model=User)
-def login(
-    payload: LoginRequest,
-    response: Response,
+@router.post("/auth/email/request", response_model=EmailChallenge, status_code=202)
+def request_email_code(
+    payload: EmailCodeRequest,
+    request: Request,
     storage: Storage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
-) -> User:
+) -> EmailChallenge:
     if not settings.auth_enabled:
         raise HTTPException(status_code=409, detail="Authentication is disabled")
-    user = authenticate_user(storage, payload.email, payload.password)
-    _start_browser_session(response, storage, user, settings)
-    return user
-
-
-@router.post("/auth/register", response_model=User, status_code=201)
-def register(
-    payload: RegistrationRequest,
-    response: Response,
-    storage: Storage = Depends(get_storage),
-    settings: Settings = Depends(get_settings),
-) -> User:
-    if not settings.auth_enabled:
-        raise HTTPException(status_code=409, detail="Authentication is disabled")
-    if not settings.registration_enabled:
-        raise HTTPException(status_code=403, detail="Email registration is disabled")
-    try:
-        user = storage.create_user(
-            str(payload.email),
-            payload.display_name,
-            PASSWORD_HASH.hash(payload.password),
+    secret = _email_code_secret(settings)
+    now = datetime.now(UTC)
+    request_ip = request.client.host if request.client else "unknown"
+    ip_cutoff = now - timedelta(seconds=settings.email_code_ip_window_seconds)
+    if (
+        storage.count_email_challenges_since(request_ip, ip_cutoff.isoformat())
+        >= settings.email_code_ip_max_requests
+    ):
+        raise HTTPException(status_code=429, detail="验证码请求过于频繁，请稍后再试")
+    latest = storage.latest_email_challenge_at(payload.email)
+    if latest:
+        retry_after = math.ceil(
+            settings.email_code_cooldown_seconds
+            - (now - datetime.fromisoformat(latest)).total_seconds()
         )
-    except IntegrityError as exc:
-        raise HTTPException(status_code=409, detail="Email already exists") from exc
+        if retry_after > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"请等待 {retry_after} 秒后重新发送",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    challenge_id = uuid.uuid4().hex
+    response = EmailChallenge(
+        challenge_id=challenge_id,
+        expires_in_seconds=settings.email_code_ttl_seconds,
+        retry_after_seconds=settings.email_code_cooldown_seconds,
+    )
+    if not _email_may_authenticate(storage, payload.email, settings):
+        return response
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = (now + timedelta(seconds=settings.email_code_ttl_seconds)).isoformat()
+    storage.create_email_challenge(
+        challenge_id,
+        payload.email,
+        request_ip,
+        digest_email_code(secret, challenge_id, payload.email, code),
+        expires_at,
+        settings.email_code_max_attempts,
+    )
+    try:
+        SMTPVerificationSender(settings).send_code(
+            payload.email, code, settings.email_code_ttl_seconds
+        )
+    except EmailDeliveryError as exc:
+        storage.delete_email_challenge(challenge_id)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return response
+
+
+@router.post("/auth/email/verify", response_model=User)
+def verify_email_code(
+    payload: EmailCodeVerify,
+    response: Response,
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> User:
+    if not settings.auth_enabled:
+        raise HTTPException(status_code=409, detail="Authentication is disabled")
+    secret = _email_code_secret(settings)
+    valid = storage.consume_email_challenge(
+        payload.challenge_id,
+        payload.email,
+        digest_email_code(secret, payload.challenge_id, payload.email, payload.code),
+        datetime.now(UTC).isoformat(),
+    )
+    if not valid:
+        raise HTTPException(status_code=401, detail="验证码无效或已过期")
+    try:
+        user, _ = storage.get_user_by_email(payload.email)
+    except KeyError:
+        if not settings.registration_enabled:
+            raise HTTPException(status_code=401, detail="验证码无效或已过期") from None
+        try:
+            user = storage.create_user(
+                payload.email,
+                payload.email.split("@", 1)[0],
+                "!email-code-only",
+            )
+        except IntegrityError:
+            user, _ = storage.get_user_by_email(payload.email)
+    if user.disabled:
+        raise HTTPException(status_code=403, detail="账号已停用")
     _start_browser_session(response, storage, user, settings)
     return user
+
+
+def _email_code_secret(settings: Settings) -> str:
+    if not settings.email_code_secret or not settings.email_code_secret.get_secret_value():
+        raise HTTPException(status_code=503, detail="邮箱验证码服务尚未配置")
+    return settings.email_code_secret.get_secret_value()
+
+
+def _email_may_authenticate(storage: Storage, email: str, settings: Settings) -> bool:
+    try:
+        user, _ = storage.get_user_by_email(email)
+        return not user.disabled
+    except KeyError:
+        return settings.registration_enabled
 
 
 def _start_browser_session(
@@ -243,7 +320,7 @@ def create_user(
         return storage.create_user(
             payload.email,
             payload.display_name,
-            PASSWORD_HASH.hash(payload.password),
+            "!email-code-only",
             is_admin=payload.is_admin,
         )
     except Exception as exc:

@@ -328,6 +328,9 @@ class Storage:
                 WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)""",
                 (session_cutoff, session_cutoff),
             ).rowcount
+            email_challenges = db.execute(
+                "DELETE FROM email_challenges WHERE expires_at < ?", (session_cutoff,)
+            ).rowcount
             messages = db.execute(
                 "DELETE FROM runner_messages WHERE created_at < ?", (message_cutoff,)
             ).rowcount
@@ -357,6 +360,7 @@ class Storage:
             ).rowcount
         return {
             "sessions": max(0, sessions),
+            "email_challenges": max(0, email_challenges),
             "runner_messages": max(0, messages),
             "events": max(0, events),
             "artifacts": max(0, artifacts),
@@ -531,6 +535,86 @@ class Storage:
         if row is None:
             raise KeyError(email)
         return self._row_to_user(row), str(row["password_hash"])
+
+    def latest_email_challenge_at(self, email: str) -> str | None:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT created_at FROM email_challenges
+                WHERE email = ? ORDER BY created_at DESC LIMIT 1""",
+                (email.strip().lower(),),
+            ).fetchone()
+        return str(row["created_at"]) if row else None
+
+    def count_email_challenges_since(self, request_ip: str, cutoff: str) -> int:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT COUNT(*) AS count FROM email_challenges
+                WHERE request_ip = ? AND created_at > ?""",
+                (request_ip, cutoff),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def create_email_challenge(
+        self,
+        challenge_id: str,
+        email: str,
+        request_ip: str,
+        code_hash: str,
+        expires_at: str,
+        max_attempts: int,
+    ) -> None:
+        now = utc_now()
+        normalized_email = email.strip().lower()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """UPDATE email_challenges SET consumed_at = ?
+                WHERE email = ? AND consumed_at IS NULL""",
+                (now, normalized_email),
+            )
+            db.execute(
+                """INSERT INTO email_challenges (
+                    id, email, request_ip, code_hash, attempts, max_attempts,
+                    expires_at, created_at
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?)""",
+                (
+                    challenge_id,
+                    normalized_email,
+                    request_ip,
+                    code_hash,
+                    max_attempts,
+                    expires_at,
+                    now,
+                ),
+            )
+
+    def consume_email_challenge(
+        self,
+        challenge_id: str,
+        email: str,
+        code_hash: str,
+        now: str,
+    ) -> bool:
+        with self._lock, self._connect() as db:
+            consumed = db.execute(
+                """UPDATE email_challenges SET consumed_at = ?
+                WHERE id = ? AND email = ? AND code_hash = ?
+                  AND consumed_at IS NULL AND expires_at > ?
+                  AND attempts < max_attempts""",
+                (now, challenge_id, email.strip().lower(), code_hash, now),
+            )
+            if consumed.rowcount == 1:
+                return True
+            db.execute(
+                """UPDATE email_challenges SET attempts = attempts + 1
+                WHERE id = ? AND email = ? AND consumed_at IS NULL
+                  AND expires_at > ? AND attempts < max_attempts""",
+                (challenge_id, email.strip().lower(), now),
+            )
+        return False
+
+    def delete_email_challenge(self, challenge_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute("DELETE FROM email_challenges WHERE id = ?", (challenge_id,))
 
     def create_session(self, token_hash: str, user_id: str, expires_at: str) -> None:
         with self._lock, self._connect() as db:

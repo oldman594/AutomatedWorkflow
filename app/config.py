@@ -78,8 +78,19 @@ class Settings(BaseSettings):
     registration_enabled: bool = True
     auth_cookie_secure: bool = False
     auth_session_hours: int = 24
+    email_code_secret: SecretStr | None = None
+    email_code_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    email_code_cooldown_seconds: int = Field(default=60, ge=0, le=3600)
+    email_code_max_attempts: int = Field(default=5, ge=1, le=20)
+    email_code_ip_window_seconds: int = Field(default=600, ge=60, le=86400)
+    email_code_ip_max_requests: int = Field(default=20, ge=1, le=1000)
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=465, ge=1, le=65535)
+    smtp_security: Literal["ssl", "starttls"] = "ssl"
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from_email: str | None = None
     bootstrap_admin_email: str | None = None
-    bootstrap_admin_password: SecretStr | None = None
     mock_llm: bool = False
     openai_api_key: str | None = Field(
         default=None,

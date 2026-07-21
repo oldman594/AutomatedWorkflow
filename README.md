@@ -54,18 +54,24 @@ autoflow-runner --download-update
 
 ## 登录与项目权限
 
-首次启动前设置管理员账号；密码使用 Argon2 保存，浏览器使用可撤销的 HttpOnly 会话 Cookie：
+AutoFlow 只使用邮箱验证码登录，不提供密码登录或密码注册。首次启动前设置管理员邮箱、验证码 HMAC 密钥和 SMTP；浏览器使用可撤销的 HttpOnly 会话 Cookie：
 
 ```dotenv
 AUTOFLOW_AUTH_ENABLED=true
 AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
-AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD=使用密码生成器创建的长密码
+AUTOFLOW_EMAIL_CODE_SECRET=使用密码生成器创建的长随机密钥
+AUTOFLOW_SMTP_HOST=smtp.example.com
+AUTOFLOW_SMTP_PORT=465
+AUTOFLOW_SMTP_SECURITY=ssl
+AUTOFLOW_SMTP_USERNAME=autoflow@example.com
+AUTOFLOW_SMTP_PASSWORD=SMTP授权码
+AUTOFLOW_SMTP_FROM_EMAIL=autoflow@example.com
 AUTOFLOW_AUTH_COOKIE_SECURE=true
 ```
 
-生产环境必须启用 HTTPS 并设置 `AUTOFLOW_AUTH_COOKIE_SECURE=true`。项目角色为 `owner`、`editor`、`viewer`：Owner 管理成员和 Runner Token，Editor 可以创建和操作任务，Viewer 只能查看任务和交付结果。
+验证码为 6 位数字，默认 10 分钟过期、60 秒内禁止同邮箱重复发送、最多尝试 5 次；同一来源 IP 默认 10 分钟最多发送 20 封。数据库只保存绑定邮箱与挑战 ID 的 HMAC。生产环境必须启用 HTTPS 并设置 `AUTOFLOW_AUTH_COOKIE_SECURE=true`。项目角色为 `owner`、`editor`、`viewer`：Owner 管理成员和 Runner Token，Editor 可以创建和操作任务，Viewer 只能查看任务和交付结果。
 
-登录页支持邮箱和密码注册。注册成功后会直接创建 HttpOnly 登录会话；新用户不是管理员，初始没有项目权限，可以自行创建项目成为 Owner，或由已有项目 Owner 按注册邮箱添加成员。私有部署可设置 `AUTOFLOW_REGISTRATION_ENABLED=false` 关闭公开注册。
+邮箱首次验证成功会自动创建普通用户，初始没有项目权限，可以自行创建项目成为 Owner，或由已有项目 Owner 按邮箱添加成员。私有部署可设置 `AUTOFLOW_REGISTRATION_ENABLED=false`，此时只有已经存在的用户会收到验证码，未知邮箱得到相同的通用响应以避免账号枚举。
 
 Runner 遇到超出普通执行范围的操作时会发送权限请求并暂停任务。任务详情页向 Owner 显示“批准授权”和“拒绝授权”；决定持久化到数据库，并在 Runner 断线重连后继续下发。拒绝授权会终止对应任务，审批记录会保留用于审计。
 
@@ -275,11 +281,22 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_RUNNER_RELEASE_MANIFEST_URL` | 空 | Ed25519 签名的 Runner 发布清单 URL |
 | `AUTOFLOW_RUNNER_RELEASE_PUBLIC_KEY` | 空 | Base64 编码的 Ed25519 发布公钥 |
 | `AUTOFLOW_AUTH_ENABLED` | `true` | 启用用户登录和项目权限 |
-| `AUTOFLOW_REGISTRATION_ENABLED` | `true` | 允许用户通过邮箱和密码自行注册 |
+| `AUTOFLOW_REGISTRATION_ENABLED` | `true` | 验证未知邮箱后自动创建普通用户 |
 | `AUTOFLOW_AUTH_COOKIE_SECURE` | `false` | 生产 HTTPS 环境必须设为 `true` |
 | `AUTOFLOW_AUTH_SESSION_HOURS` | `24` | 登录会话有效期 |
+| `AUTOFLOW_EMAIL_CODE_SECRET` | 空 | 验证码 HMAC 密钥；生产必须设置 |
+| `AUTOFLOW_EMAIL_CODE_TTL_SECONDS` | `600` | 邮箱验证码有效期 |
+| `AUTOFLOW_EMAIL_CODE_COOLDOWN_SECONDS` | `60` | 同一邮箱重新发送冷却时间 |
+| `AUTOFLOW_EMAIL_CODE_MAX_ATTEMPTS` | `5` | 单个验证码最大尝试次数 |
+| `AUTOFLOW_EMAIL_CODE_IP_WINDOW_SECONDS` | `600` | 来源 IP 发送限额统计窗口 |
+| `AUTOFLOW_EMAIL_CODE_IP_MAX_REQUESTS` | `20` | 单个来源 IP 在窗口内最多发送数 |
+| `AUTOFLOW_SMTP_HOST` | 空 | SMTP 服务器地址 |
+| `AUTOFLOW_SMTP_PORT` | `465` | SMTP 端口 |
+| `AUTOFLOW_SMTP_SECURITY` | `ssl` | `ssl` 或 `starttls` |
+| `AUTOFLOW_SMTP_USERNAME` | 空 | SMTP 登录账号；无认证中继可留空 |
+| `AUTOFLOW_SMTP_PASSWORD` | 空 | SMTP 密码或授权码 |
+| `AUTOFLOW_SMTP_FROM_EMAIL` | 空 | 验证码发件地址 |
 | `AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL` | 空 | 空数据库首次启动时创建的管理员邮箱 |
-| `AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD` | 空 | 首次管理员密码，至少 8 个字符 |
 | `AUTOFLOW_MAX_FIX_ATTEMPTS` | `3` | 构建/测试自动修复次数 |
 | `AUTOFLOW_MAX_PRODUCT_ITERATIONS` | `3` | 需求规格自动对齐轮数上限 |
 | `AUTOFLOW_MAX_ACCEPTANCE_ITERATIONS` | `2` | 产品验收纠偏轮数上限 |
@@ -310,8 +327,8 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 
 ## API
 
-- `POST /api/auth/register` 使用邮箱和密码注册并创建登录会话
-- `POST /api/auth/login` 使用邮箱和密码登录
+- `POST /api/auth/email/request` 发送登录验证码
+- `POST /api/auth/email/verify` 验证邮箱并创建登录会话
 - `POST /api/tasks` 创建任务
 - `POST /api/tasks/{id}/start` 启动工作流
 - `GET /api/tasks/{id}` 获取任务、事件和产物

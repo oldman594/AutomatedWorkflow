@@ -134,6 +134,20 @@ sessions = Table(
     Column("revoked_at", String(40)),
 )
 
+email_challenges = Table(
+    "email_challenges",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("email", String(320), nullable=False),
+    Column("request_ip", String(64), nullable=False),
+    Column("code_hash", String(64), nullable=False),
+    Column("attempts", Integer, nullable=False, server_default=text("0")),
+    Column("max_attempts", Integer, nullable=False),
+    Column("expires_at", String(40), nullable=False),
+    Column("created_at", String(40), nullable=False),
+    Column("consumed_at", String(40)),
+)
+
 runner_tokens = Table(
     "runner_tokens",
     metadata,
@@ -213,6 +227,9 @@ Index(
     runner_messages.c.seq,
 )
 Index("idx_sessions_user", sessions.c.user_id, sessions.c.expires_at)
+Index("idx_email_challenges_email", email_challenges.c.email, email_challenges.c.created_at)
+Index("idx_email_challenges_expiry", email_challenges.c.expires_at)
+Index("idx_email_challenges_ip", email_challenges.c.request_ip, email_challenges.c.created_at)
 Index("idx_project_members_user", project_members.c.user_id, project_members.c.project_id)
 Index("idx_jobs_claim", jobs.c.target, jobs.c.status, jobs.c.available_at, jobs.c.created_at)
 Index("idx_permissions_runner", permission_requests.c.runner_id, permission_requests.c.status)

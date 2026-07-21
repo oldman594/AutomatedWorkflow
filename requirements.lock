@@ -16,10 +16,6 @@ anyio==4.14.2
     #   openai
     #   starlette
     #   watchfiles
-argon2-cffi==25.1.0
-    # via pwdlib
-argon2-cffi-bindings==25.1.0
-    # via argon2-cffi
 asgiref==3.12.1
     # via opentelemetry-instrumentation-asgi
 build==1.5.0
@@ -30,9 +26,7 @@ certifi==2026.6.17
     #   httpx
     #   requests
 cffi==2.1.0
-    # via
-    #   argon2-cffi-bindings
-    #   cryptography
+    # via cryptography
 charset-normalizer==3.4.9
     # via requests
 click==8.4.2
@@ -153,8 +147,6 @@ psycopg==3.3.4
     # via automated-workflow (pyproject.toml)
 psycopg-binary==3.3.4
     # via psycopg
-pwdlib==0.3.0
-    # via automated-workflow (pyproject.toml)
 pycparser==3.0
     # via cffi
 pydantic==2.13.4

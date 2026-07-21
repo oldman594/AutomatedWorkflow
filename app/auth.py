@@ -6,14 +6,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, HTTPException, Request, status
-from pwdlib import PasswordHash
 
 from app.config import Settings, get_settings
-from app.models import ProjectRole, User
+from app.models import EmailCodeRequest, ProjectRole, User
 from app.storage import Storage
 
 SESSION_COOKIE = "autoflow_session"
-PASSWORD_HASH = PasswordHash.recommended()
 ROLE_LEVEL = {
     ProjectRole.VIEWER: 1,
     ProjectRole.EDITOR: 2,
@@ -42,26 +40,16 @@ def new_runner_token() -> str:
 def initialize_identity(storage: Storage, settings: Settings) -> None:
     if not settings.auth_enabled or storage.count_users() > 0:
         return
-    if not settings.bootstrap_admin_email or not settings.bootstrap_admin_password:
+    if not settings.bootstrap_admin_email:
         return
-    email = settings.bootstrap_admin_email.strip().lower()
+    email = EmailCodeRequest(email=settings.bootstrap_admin_email).email
     user = storage.create_user(
         email,
         email.split("@", 1)[0],
-        PASSWORD_HASH.hash(settings.bootstrap_admin_password.get_secret_value()),
+        "!email-code-only",
         is_admin=True,
     )
     storage.upsert_project_member("default", user.id, ProjectRole.OWNER)
-
-
-def authenticate_user(storage: Storage, email: str, password: str) -> User:
-    try:
-        user, password_hash = storage.get_user_by_email(email)
-    except KeyError as exc:
-        raise HTTPException(status_code=401, detail="Invalid email or password") from exc
-    if user.disabled or not PASSWORD_HASH.verify(password, password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    return user
 
 
 def create_user_session(storage: Storage, user: User, settings: Settings) -> tuple[str, datetime]:
