@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>AutoFlow · 开发任务控制台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <header class="brand">
+        <div class="brand-mark" aria-hidden="true">AF</div>
+        <div>
+          <strong>AutoFlow</strong>
+          <span>开发任务控制台</span>
+        </div>
+      </header>
+
+      <button id="new-task-button" class="primary full-width" type="button">
+        <i data-lucide="plus" aria-hidden="true"></i>
+        新建任务
+      </button>
+
+      <div class="task-nav-head">
+        <span>最近任务</span>
+        <button id="refresh-button" class="icon-button" type="button" title="刷新任务">
+          <i data-lucide="refresh-cw" aria-hidden="true"></i>
+        </button>
+      </div>
+      <nav id="task-list" class="task-list" aria-label="任务列表"></nav>
+
+      <footer class="connection">
+        <span id="health-dot" class="health-dot"></span>
+        <span id="health-text">正在连接</span>
+        <span id="model-name" class="model-name"></span>
+      </footer>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <button id="mobile-menu" class="icon-button mobile-only" type="button" title="打开任务列表">
+          <i data-lucide="panel-left" aria-hidden="true"></i>
+        </button>
+        <div class="breadcrumb">
+          <span>工作台</span>
+          <i data-lucide="chevron-right" aria-hidden="true"></i>
+          <strong id="breadcrumb-title">任务概览</strong>
+        </div>
+        <div id="top-actions" class="top-actions"></div>
+      </header>
+
+      <section id="empty-state" class="empty-state">
+        <div class="empty-visual" aria-hidden="true">
+          <div class="flow-node active">需求</div><span></span>
+          <div class="flow-node">代码</div><span></span>
+          <div class="flow-node">验证</div><span></span>
+          <div class="flow-node">交付</div>
+        </div>
+        <h1>创建第一个开发任务</h1>
+        <p>提交需求和仓库，工作流将进入隔离分支执行。</p>
+        <button class="primary" type="button" data-open-create>
+          <i data-lucide="plus" aria-hidden="true"></i>
+          新建任务
+        </button>
+      </section>
+
+      <section id="task-detail" class="task-detail hidden">
+        <div class="task-heading">
+          <div>
+            <div class="heading-meta">
+              <span id="task-status" class="status-pill"></span>
+              <span id="task-id" class="mono"></span>
+            </div>
+            <h1 id="task-title"></h1>
+            <div class="repo-line">
+              <i data-lucide="folder-git-2" aria-hidden="true"></i>
+              <span id="task-repo" class="mono"></span>
+              <span class="separator">/</span>
+              <i data-lucide="git-branch" aria-hidden="true"></i>
+              <span id="task-branch" class="mono"></span>
+            </div>
+            <div id="worktree-line" class="repo-line worktree-line hidden">
+              <i data-lucide="box" aria-hidden="true"></i>
+              <span>隔离执行工作区</span>
+              <span class="separator">/</span>
+              <span id="task-worktree" class="mono"></span>
+              <button id="copy-worktree" class="icon-button compact" type="button" title="复制工作区路径">
+                <i data-lucide="copy" aria-hidden="true"></i>
+              </button>
+            </div>
+            <div id="runner-line" class="repo-line worktree-line hidden">
+              <i data-lucide="laptop" aria-hidden="true"></i>
+              <span>执行节点</span>
+              <span class="separator">/</span>
+              <span id="task-runner" class="mono"></span>
+            </div>
+          </div>
+          <div class="progress-block">
+            <div><span>执行进度</span><strong id="progress-value">0%</strong></div>
+            <div class="progress-track"><span id="progress-bar"></span></div>
+          </div>
+        </div>
+
+        <div id="stage-rail" class="stage-rail" aria-label="工作流阶段"></div>
+
+        <div class="content-grid">
+          <div class="main-column">
+            <section class="panel requirement-panel">
+              <div class="panel-heading">
+                <h2>任务需求</h2>
+                <i data-lucide="file-text" aria-hidden="true"></i>
+              </div>
+              <p id="task-requirement"></p>
+            </section>
+
+            <section class="panel artifacts-panel">
+              <div class="tabs" id="artifact-tabs" role="tablist">
+                <button class="tab" data-kind="product_spec" type="button">产品</button>
+                <button class="tab" data-kind="requirement_assessment" type="button">需求评分</button>
+                <button class="tab active" data-kind="plan" type="button">计划</button>
+                <button class="tab" data-kind="reading" type="button">阅读</button>
+                <button class="tab" data-kind="design" type="button">设计</button>
+                <button class="tab" data-kind="diff" type="button">变更</button>
+                <button class="tab" data-kind="validation" type="button">验证</button>
+                <button class="tab" data-kind="review" type="button">审查</button>
+                <button class="tab" data-kind="acceptance" type="button">产品验收</button>
+                <button class="tab" data-kind="delivery" type="button">交付结果</button>
+                <button class="tab" data-kind="mr_description" type="button">MR</button>
+              </div>
+              <div id="artifact-empty" class="artifact-empty">该阶段尚未生成产物</div>
+              <pre id="artifact-content" class="artifact-content hidden"><code></code></pre>
+            </section>
+          </div>
+
+          <aside class="activity-panel panel">
+            <div class="panel-heading">
+              <h2>运行记录</h2>
+              <span id="event-count" class="count">0</span>
+            </div>
+            <div id="event-list" class="event-list"></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="create-overlay" class="overlay hidden" aria-hidden="true">
+    <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="create-title">
+      <header class="drawer-header">
+        <div>
+          <span class="eyebrow">NEW DEVELOPMENT RUN</span>
+          <h2 id="create-title">创建开发任务</h2>
+        </div>
+        <button id="close-create" class="icon-button" type="button" title="关闭">
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <form id="task-form" class="task-form">
+        <label>
+          <span>任务标题</span>
+          <input name="title" required maxlength="160" placeholder="例如：增加 Session 登录校验">
+        </label>
+        <label>
+          <span>MT 需求</span>
+          <textarea name="requirement" required rows="8" placeholder="粘贴完整需求、验收标准和约束"></textarea>
+        </label>
+        <label>
+          <span>执行节点</span>
+          <select name="runner_id" id="runner-select">
+            <option value="">当前服务器</option>
+          </select>
+        </label>
+        <label>
+          <span>Git 仓库路径</span>
+          <input id="repository-input" name="repository" required placeholder="/home/user/project" spellcheck="false">
+        </label>
+        <div class="form-row">
+          <label>
+            <span>目标分支</span>
+            <input name="branch" placeholder="留空自动生成" spellcheck="false">
+          </label>
+          <label>
+            <span>模型</span>
+            <input name="model" id="model-input" placeholder="gpt-5.6" spellcheck="false">
+          </label>
+        </div>
+        <details>
+          <summary>构建与测试设置</summary>
+          <div class="details-body">
+            <label>
+              <span>构建命令</span>
+              <input name="build_command" placeholder="自动识别" spellcheck="false">
+            </label>
+            <label>
+              <span>测试命令</span>
+              <input name="test_command" placeholder="自动识别" spellcheck="false">
+            </label>
+          </div>
+        </details>
+        <div class="switch-row">
+          <div><strong>包含本地未提交代码</strong><span>将现有半成品复制到隔离工作区作为开发基线</span></div>
+          <label class="switch"><input name="include_local_changes" type="checkbox" checked><span></span></label>
+        </div>
+        <div class="switch-row">
+          <div><strong>完成后同步到本地仓库</strong><span>验收通过后直接更新原仓库文件，不改动暂存区</span></div>
+          <label class="switch"><input name="sync_to_source" type="checkbox" checked><span></span></label>
+        </div>
+        <div class="switch-row">
+          <div><strong>自动应用代码</strong><span>写入隔离 worktree</span></div>
+          <label class="switch"><input name="auto_apply" type="checkbox" checked><span></span></label>
+        </div>
+        <div class="switch-row">
+          <div><strong>验证通过后提交</strong><span>默认保留人工审批</span></div>
+          <label class="switch"><input name="auto_commit" type="checkbox"><span></span></label>
+        </div>
+        <p id="form-error" class="form-error hidden"></p>
+        <footer class="drawer-actions">
+          <button id="cancel-create" class="secondary" type="button">取消</button>
+          <button class="primary" type="submit">
+            <i data-lucide="play" aria-hidden="true"></i>
+            创建并运行
+          </button>
+        </footer>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

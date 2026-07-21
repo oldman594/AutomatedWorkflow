@@ -1,0 +1,14 @@
+services:
+  autoflow:
+    build: .
+    ports:
+      - "8765:8765"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AUTOFLOW_RUNNER_TOKEN: ${AUTOFLOW_RUNNER_TOKEN:-}
+      AUTOFLOW_ALLOWED_ROOTS: /workspace
+      AUTOFLOW_DATABASE_PATH: /data/autoflow.db
+    volumes:
+      - ./data:/data
+      - ./worktrees:/opt/autoflow/worktrees
+      - ${AUTOFLOW_WORKSPACE:-..}:/workspace
