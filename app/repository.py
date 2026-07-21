@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -278,6 +279,8 @@ class Repository:
         if not terms:
             return ""
         pattern = "|".join(self._escape_regex(term) for term in terms)
+        if shutil.which("rg") is None:
+            return self._search_with_python(pattern, limit)
         result = self.run(
             [
                 "rg",
@@ -299,6 +302,37 @@ class Repository:
             check=False,
         )
         return "\n".join(result.stdout.splitlines()[:limit])
+
+    def _search_with_python(self, pattern: str, limit: int) -> str:
+        matcher = re.compile(pattern, re.IGNORECASE)
+        listed = self.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            check=False,
+        )
+        matches: list[str] = []
+        for relative in self._null_paths(listed.stdout):
+            try:
+                path = self._safe_path(relative)
+            except RepositoryError:
+                continue
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or any(part in IGNORED_PARTS for part in Path(relative).parts)
+                or not self._is_text_file(path)
+            ):
+                continue
+            try:
+                with path.open(encoding="utf-8", errors="ignore") as source:
+                    for line_number, line in enumerate(source, start=1):
+                        if not matcher.search(line):
+                            continue
+                        matches.append(f"{relative}:{line_number}:{line.rstrip()[:500]}")
+                        if len(matches) >= limit:
+                            return "\n".join(matches)
+            except OSError:
+                continue
+        return "\n".join(matches)
 
     def collect_context(self, likely_paths: list[str], query: str, max_chars: int) -> str:
         candidates: list[Path] = []

@@ -38,6 +38,17 @@ def test_context_is_scoped_and_worktree_is_isolated(repo: Path, tmp_path: Path) 
     assert "changed" in worktree.diff()
 
 
+def test_search_falls_back_when_ripgrep_is_unavailable(
+    repo: Path, tmp_path: Path, monkeypatch
+) -> None:
+    (repo / "unfinished.py").write_text("STATUS = 'needs fallback search'\n", encoding="utf-8")
+    monkeypatch.setattr("app.repository.shutil.which", lambda _: None)
+
+    result = Repository(repo, [tmp_path]).search("fallback")
+
+    assert "unfinished.py:1:STATUS = 'needs fallback search'" in result
+
+
 def test_local_changes_become_an_isolated_clean_baseline(repo: Path, tmp_path: Path) -> None:
     staged = "def greet():\n    return 'partially implemented'\n"
     working = staged + "\ndef local_only():\n    return True\n"
