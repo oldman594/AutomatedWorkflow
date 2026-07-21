@@ -1,4 +1,19 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-autoflow}
+      POSTGRES_USER: ${POSTGRES_USER:-autoflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autoflow} -d ${POSTGRES_DB:-autoflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
   sandbox-image:
     build:
       context: ./sandbox
@@ -8,16 +23,40 @@ services:
 
   autoflow:
     build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8765:8765"
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AUTOFLOW_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-autoflow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoflow}
       AUTOFLOW_RUNNER_TOKEN: ${AUTOFLOW_RUNNER_TOKEN:-}
-      AUTOFLOW_ALLOWED_ROOTS: /workspace
-      AUTOFLOW_DATABASE_PATH: /data/autoflow.db
+      AUTOFLOW_AUTH_ENABLED: "true"
+      AUTOFLOW_AUTH_COOKIE_SECURE: ${AUTOFLOW_AUTH_COOKIE_SECURE:-true}
+      AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL: ${AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL:?set bootstrap admin email}
+      AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD: ${AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD:?set bootstrap admin password}
+      AUTOFLOW_ALLOWED_ROOTS: ${AUTOFLOW_WORKSPACE:-/workspace}
+      AUTOFLOW_WORKTREE_ROOT: ${PWD}/worktrees
       AUTOFLOW_SANDBOX_MODE: ${AUTOFLOW_SANDBOX_MODE:-docker}
       AUTOFLOW_SANDBOX_IMAGE: ${AUTOFLOW_SANDBOX_IMAGE:-autoflow-sandbox:latest}
     volumes:
-      - ./data:/data
-      - ./worktrees:/opt/autoflow/worktrees
-      - ${AUTOFLOW_WORKSPACE:-..}:/workspace
+      - ${PWD}/worktrees:${PWD}/worktrees
+      - ${AUTOFLOW_WORKSPACE:-..}:${AUTOFLOW_WORKSPACE:-/workspace}
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  maintenance:
+    build: .
+    profiles: [maintenance]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AUTOFLOW_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-autoflow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoflow}
+    command: ["autoflow-maintenance", "backup", "/backups/autoflow.dump"]
+    volumes:
+      - ./backups:/backups
+
+volumes:
+  postgres-data:

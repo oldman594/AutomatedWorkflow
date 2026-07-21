@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     codex_cli_path: str = "codex"
     reasoning_effort: str = "medium"
     database_path: Path = Path("./data/autoflow.db")
+    database_url: str | None = None
     worktree_root: Path = Path("./worktrees")
     allowed_roots: Annotated[list[Path], NoDecode] = [Path.home()]
     max_fix_attempts: int = 3
@@ -50,6 +51,10 @@ class Settings(BaseSettings):
     job_lease_seconds: int = 60
     job_max_attempts: int = 3
     job_retry_base_seconds: int = 5
+    session_cleanup_hours: int = 24
+    message_retention_days: int = 14
+    execution_retention_days: int = 90
+    worktree_retention_days: int = 30
     sandbox_mode: SandboxMode = "docker"
     sandbox_image: str = "autoflow-sandbox:latest"
     sandbox_network: str = "none"

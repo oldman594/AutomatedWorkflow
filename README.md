@@ -84,6 +84,30 @@ AUTOFLOW_SANDBOX_MODE=host
 
 每次进入工作流阶段都会更新 Job checkpoint。重试或服务重启后复用原 worktree，并从已有的产品规格、计划、阅读、设计和代码 Artifact 继续；源仓库补丁同步结果也会单独持久化，避免重复应用。
 
+## 数据库迁移与维护
+
+本地开发默认使用 SQLite；生产部署设置 PostgreSQL URL。服务启动时自动执行 Alembic `upgrade head`，现有 SQLite V1 数据库会由初始迁移原位接管：
+
+```dotenv
+AUTOFLOW_DATABASE_URL=postgresql+psycopg://autoflow:password@postgres:5432/autoflow
+```
+
+手动迁移和检查当前版本：
+
+```bash
+alembic upgrade head
+alembic current
+```
+
+在线备份不会在命令行暴露 PostgreSQL 密码。SQLite 使用 Backup API，PostgreSQL 使用 `pg_dump --format=custom`：
+
+```bash
+autoflow-maintenance backup ./backups/autoflow.dump
+autoflow-maintenance cleanup
+```
+
+清理任务仅删除过期会话、协议审计消息，以及终态任务的中间事件、Artifact 和受控 worktree；`delivery`、Commit 和 MR 描述会保留。Compose 生产模板默认启用 PostgreSQL 持久卷和健康检查，可通过 `docker compose --profile maintenance run --rm maintenance` 创建备份。
+
 ## 快速启动
 
 需要 Python 3.11+、Git 和 ripgrep。
@@ -196,6 +220,7 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_REASONING_EFFORT` | `medium` | 推理强度 |
 | `AUTOFLOW_ALLOWED_ROOTS` | 用户主目录 | 逗号分隔的仓库白名单根目录 |
 | `AUTOFLOW_DATABASE_PATH` | `./data/autoflow.db` | SQLite 文件 |
+| `AUTOFLOW_DATABASE_URL` | 空 | 生产 PostgreSQL URL；设置后优先于 SQLite 路径 |
 | `AUTOFLOW_RUNNER_TOKEN` | 空 | Local Runner 内部 API 的 Bearer Token |
 | `AUTOFLOW_RUNNER_OFFLINE_SECONDS` | `30` | 超过该心跳间隔后标记 Runner 离线 |
 | `AUTOFLOW_AUTH_ENABLED` | `true` | 启用用户登录和项目权限 |
@@ -211,6 +236,10 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_JOB_LEASE_SECONDS` | `60` | Job 租约有效期 |
 | `AUTOFLOW_JOB_MAX_ATTEMPTS` | `3` | 基础设施失败时的最大任务尝试次数 |
 | `AUTOFLOW_JOB_RETRY_BASE_SECONDS` | `5` | 指数退避的基础秒数 |
+| `AUTOFLOW_SESSION_CLEANUP_HOURS` | `24` | 已过期或撤销会话的清理宽限期 |
+| `AUTOFLOW_MESSAGE_RETENTION_DAYS` | `14` | Runner 协议审计消息保留天数 |
+| `AUTOFLOW_EXECUTION_RETENTION_DAYS` | `90` | 终态任务中间执行数据保留天数 |
+| `AUTOFLOW_WORKTREE_RETENTION_DAYS` | `30` | 终态任务 worktree 保留天数 |
 | `AUTOFLOW_MAX_CONTEXT_CHARS` | `80000` | 单阶段代码上下文字符上限 |
 | `AUTOFLOW_MAX_DOWNLOAD_BYTES` | `104857600` | 交付 ZIP 内文件总大小上限 |
 | `AUTOFLOW_SANDBOX_MODE` | `docker` | 命令执行模式：生产使用 `docker`，可信开发可显式使用 `host` |

@@ -21,7 +21,7 @@ STATIC_DIR = BASE_DIR / "static"
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    storage = Storage(settings.database_path)
+    storage = Storage(settings.database_url or settings.database_path)
     initialize_identity(storage, settings)
     app.state.storage = storage
     engine = WorkflowEngine(settings, storage)
@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         worker.stop()
+        storage.close()
 
 
 app = FastAPI(title="AutoFlow", version="0.1.0", lifespan=lifespan)

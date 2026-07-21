@@ -8,11 +8,14 @@ version = "0.1.0"
 description = "A human-gated multi-agent software development workflow"
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.14,<2",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "openai>=1.68,<3",
   "pydantic-settings>=2.7,<3",
   "pwdlib[argon2]>=0.2,<1",
+  "psycopg[binary]>=3.2,<4",
+  "sqlalchemy>=2.0,<3",
   "uvicorn[standard]>=0.34,<1",
   "websockets>=13,<17",
 ]
@@ -31,6 +34,7 @@ dev = [
 [project.scripts]
 autoflow = "app.cli:main"
 autoflow-runner = "app.runner:main"
+autoflow-maintenance = "app.maintenance:main"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
