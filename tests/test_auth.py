@@ -12,12 +12,79 @@ def configure_auth(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AUTOFLOW_WORKTREE_ROOT", str(tmp_path / "worktrees"))
     monkeypatch.setenv("AUTOFLOW_ALLOWED_ROOTS", str(tmp_path))
     monkeypatch.setenv("AUTOFLOW_AUTH_ENABLED", "true")
+    monkeypatch.setenv("AUTOFLOW_REGISTRATION_ENABLED", "true")
     monkeypatch.setenv("AUTOFLOW_AUTH_COOKIE_SECURE", "false")
     monkeypatch.setenv("AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD", "correct-horse-battery")
     monkeypatch.setenv("AUTOFLOW_MOCK_LLM", "true")
     monkeypatch.setenv("AUTOFLOW_CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     monkeypatch.delenv("AUTOFLOW_RUNNER_TOKEN", raising=False)
+    get_settings.cache_clear()
+
+
+def test_email_registration_creates_session_and_project_owner(tmp_path: Path, monkeypatch) -> None:
+    configure_auth(tmp_path, monkeypatch)
+    with TestClient(app) as client:
+        assert 'id="register-form"' in client.get("/").text
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "email": "Developer@Example.com",
+                "display_name": "  Developer  ",
+                "password": "developer-password",
+            },
+        )
+        assert registered.status_code == 201
+        assert registered.json()["email"] == "developer@example.com"
+        assert registered.json()["display_name"] == "Developer"
+        assert registered.json()["is_admin"] is False
+        assert "HttpOnly" in registered.headers["set-cookie"]
+        assert client.get("/api/auth/me").json()["email"] == "developer@example.com"
+        assert client.get("/api/projects").json() == []
+
+        project = client.post(
+            "/api/projects", json={"name": "Developer Project", "slug": "developer-project"}
+        )
+        assert project.status_code == 201
+        assert project.json()["role"] == "owner"
+
+        client.post("/api/auth/logout")
+        duplicate = client.post(
+            "/api/auth/register",
+            json={
+                "email": "developer@example.com",
+                "display_name": "Duplicate",
+                "password": "developer-password",
+            },
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"] == "Email already exists"
+        invalid = client.post(
+            "/api/auth/register",
+            json={
+                "email": "not-an-email",
+                "display_name": "Invalid",
+                "password": "developer-password",
+            },
+        )
+        assert invalid.status_code == 422
+    get_settings.cache_clear()
+
+
+def test_email_registration_can_be_disabled(tmp_path: Path, monkeypatch) -> None:
+    configure_auth(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTOFLOW_REGISTRATION_ENABLED", "false")
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "email": "developer@example.com",
+                "display_name": "Developer",
+                "password": "developer-password",
+            },
+        )
+        assert response.status_code == 403
     get_settings.cache_clear()
 
 

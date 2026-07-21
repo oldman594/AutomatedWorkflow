@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 def utc_now() -> str:
@@ -229,8 +229,20 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=8, max_length=1024)
 
 
-class UserCreate(LoginRequest):
+class RegistrationRequest(LoginRequest):
+    email: EmailStr = Field(max_length=320)
     display_name: str = Field(min_length=1, max_length=160)
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("display name cannot be empty")
+        return normalized
+
+
+class UserCreate(RegistrationRequest):
     is_admin: bool = False
 
 
@@ -252,7 +264,7 @@ class ProjectAccess(Project):
 
 
 class ProjectMemberCreate(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
+    email: EmailStr = Field(max_length=320)
     role: ProjectRole
 
 

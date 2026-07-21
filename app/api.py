@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
+from sqlalchemy.exc import IntegrityError
 
 from app.auth import (
     PASSWORD_HASH,
@@ -43,6 +44,7 @@ from app.models import (
     ProjectRole,
     PublishRequest,
     PublishResult,
+    RegistrationRequest,
     RunnerArtifactCreate,
     RunnerEventCreate,
     RunnerInfo,
@@ -146,6 +148,7 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
         "provider_key_configured": not settings.route_errors(),
         "runner_token_configured": bool(settings.runner_token),
         "auth_enabled": settings.auth_enabled,
+        "registration_enabled": settings.registration_enabled,
         "agent_routes": settings.agent_routes,
         "quality_gate": {
             "threshold": settings.product_quality_threshold,
@@ -165,6 +168,39 @@ def login(
     if not settings.auth_enabled:
         raise HTTPException(status_code=409, detail="Authentication is disabled")
     user = authenticate_user(storage, payload.email, payload.password)
+    _start_browser_session(response, storage, user, settings)
+    return user
+
+
+@router.post("/auth/register", response_model=User, status_code=201)
+def register(
+    payload: RegistrationRequest,
+    response: Response,
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> User:
+    if not settings.auth_enabled:
+        raise HTTPException(status_code=409, detail="Authentication is disabled")
+    if not settings.registration_enabled:
+        raise HTTPException(status_code=403, detail="Email registration is disabled")
+    try:
+        user = storage.create_user(
+            str(payload.email),
+            payload.display_name,
+            PASSWORD_HASH.hash(payload.password),
+        )
+    except IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="Email already exists") from exc
+    _start_browser_session(response, storage, user, settings)
+    return user
+
+
+def _start_browser_session(
+    response: Response,
+    storage: Storage,
+    user: User,
+    settings: Settings,
+) -> None:
     token, expires_at = create_user_session(storage, user, settings)
     response.set_cookie(
         SESSION_COOKIE,
@@ -175,7 +211,6 @@ def login(
         samesite="lax",
         path="/",
     )
-    return user
 
 
 @router.post("/auth/logout", status_code=204)

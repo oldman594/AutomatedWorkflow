@@ -65,6 +65,8 @@ AUTOFLOW_AUTH_COOKIE_SECURE=true
 
 生产环境必须启用 HTTPS 并设置 `AUTOFLOW_AUTH_COOKIE_SECURE=true`。项目角色为 `owner`、`editor`、`viewer`：Owner 管理成员和 Runner Token，Editor 可以创建和操作任务，Viewer 只能查看任务和交付结果。
 
+登录页支持邮箱和密码注册。注册成功后会直接创建 HttpOnly 登录会话；新用户不是管理员，初始没有项目权限，可以自行创建项目成为 Owner，或由已有项目 Owner 按注册邮箱添加成员。私有部署可设置 `AUTOFLOW_REGISTRATION_ENABLED=false` 关闭公开注册。
+
 Runner 遇到超出普通执行范围的操作时会发送权限请求并暂停任务。任务详情页向 Owner 显示“批准授权”和“拒绝授权”；决定持久化到数据库，并在 Runner 断线重连后继续下发。拒绝授权会终止对应任务，审批记录会保留用于审计。
 
 ## Git 平台集成
@@ -273,6 +275,7 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_RUNNER_RELEASE_MANIFEST_URL` | 空 | Ed25519 签名的 Runner 发布清单 URL |
 | `AUTOFLOW_RUNNER_RELEASE_PUBLIC_KEY` | 空 | Base64 编码的 Ed25519 发布公钥 |
 | `AUTOFLOW_AUTH_ENABLED` | `true` | 启用用户登录和项目权限 |
+| `AUTOFLOW_REGISTRATION_ENABLED` | `true` | 允许用户通过邮箱和密码自行注册 |
 | `AUTOFLOW_AUTH_COOKIE_SECURE` | `false` | 生产 HTTPS 环境必须设为 `true` |
 | `AUTOFLOW_AUTH_SESSION_HOURS` | `24` | 登录会话有效期 |
 | `AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL` | 空 | 空数据库首次启动时创建的管理员邮箱 |
@@ -307,6 +310,8 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 
 ## API
 
+- `POST /api/auth/register` 使用邮箱和密码注册并创建登录会话
+- `POST /api/auth/login` 使用邮箱和密码登录
 - `POST /api/tasks` 创建任务
 - `POST /api/tasks/{id}/start` 启动工作流
 - `GET /api/tasks/{id}` 获取任务、事件和产物

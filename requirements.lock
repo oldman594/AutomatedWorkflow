@@ -45,6 +45,10 @@ cryptography==46.0.7
     # via automated-workflow (pyproject.toml)
 distro==1.9.0
     # via openai
+dnspython==2.8.0
+    # via email-validator
+email-validator==2.3.0
+    # via automated-workflow (pyproject.toml)
 fastapi==0.139.2
     # via automated-workflow (pyproject.toml)
 googleapis-common-protos==1.75.0
@@ -66,6 +70,7 @@ httpx==0.28.1
 idna==3.18
     # via
     #   anyio
+    #   email-validator
     #   httpx
     #   requests
 iniconfig==2.3.0

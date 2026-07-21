@@ -30,10 +30,13 @@ button { cursor: pointer; }
 
 .login-screen { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
 .login-panel { width: min(390px, 100%); padding: 30px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
-.login-panel h1 { margin: 18px 0 26px; font-size: 22px; letter-spacing: 0; }
+.login-panel h1 { margin: 18px 0 20px; font-size: 22px; letter-spacing: 0; }
 .login-panel label { display: block; margin-bottom: 18px; }
 .login-panel label span { display: block; margin-bottom: 7px; color: #46524c; font-size: 11px; font-weight: 700; }
 .login-panel .form-error { margin: 0 0 16px; }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 22px; padding: 3px; background: var(--soft); border: 1px solid var(--line); border-radius: 6px; }
+.auth-tab { min-height: 34px; color: var(--muted); background: transparent; font-size: 12px; font-weight: 600; }
+.auth-tab.active { color: var(--green); background: var(--paper); box-shadow: 0 1px 3px rgba(27, 44, 36, .1); }
 
 .app-shell { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 22px 18px 16px; background: #14211c; color: #edf5f1; border-right: 1px solid #283b33; z-index: 20; }

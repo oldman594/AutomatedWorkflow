@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     runner_release_manifest_url: str | None = None
     runner_release_public_key: str | None = None
     auth_enabled: bool = True
+    registration_enabled: bool = True
     auth_cookie_secure: bool = False
     auth_session_hours: int = 24
     bootstrap_admin_email: str | None = None

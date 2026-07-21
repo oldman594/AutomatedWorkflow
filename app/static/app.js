@@ -404,8 +404,22 @@ function updateRepositoryPlaceholder() {
   $("#repository-input").placeholder = runner?.roots?.[0] || "/home/user/project";
 }
 
+function showAuthMode(mode) {
+  const registering = mode === "register";
+  $("#auth-title").textContent = registering ? "注册 AutoFlow" : "登录 AutoFlow";
+  $("#login-form").classList.toggle("hidden", registering);
+  $("#register-form").classList.toggle("hidden", !registering);
+  $("#login-tab").classList.toggle("active", !registering);
+  $("#register-tab").classList.toggle("active", registering);
+  $("#login-tab").setAttribute("aria-selected", String(!registering));
+  $("#register-tab").setAttribute("aria-selected", String(registering));
+}
+
 async function initializeApplication() {
   await loadHealth();
+  const registrationDisabled = state.health?.registration_enabled === false;
+  $("#register-tab").classList.toggle("hidden", registrationDisabled);
+  if (registrationDisabled) showAuthMode("login");
   if (state.health?.auth_enabled) {
     try {
       state.user = await api("/auth/me");
@@ -429,6 +443,8 @@ async function initializeApplication() {
 
 document.addEventListener("DOMContentLoaded", () => {
   initIcons(); initializeApplication();
+  $("#login-tab").addEventListener("click", () => showAuthMode("login"));
+  $("#register-tab").addEventListener("click", () => showAuthMode("register"));
   $("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -444,6 +460,23 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (error) {
       $("#login-error").textContent = error.message;
       $("#login-error").classList.remove("hidden");
+    } finally { button.disabled = false; }
+  });
+  $("#register-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type=submit]");
+    const values = Object.fromEntries(new FormData(form));
+    button.disabled = true;
+    try {
+      if (values.password !== values.password_confirmation) throw new Error("两次输入的密码不一致");
+      delete values.password_confirmation;
+      await api("/auth/register", { method: "POST", body: JSON.stringify(values) });
+      $("#register-error").classList.add("hidden");
+      await initializeApplication();
+    } catch (error) {
+      $("#register-error").textContent = error.message;
+      $("#register-error").classList.remove("hidden");
     } finally { button.disabled = false; }
   });
   $("#logout-button").addEventListener("click", async () => {
