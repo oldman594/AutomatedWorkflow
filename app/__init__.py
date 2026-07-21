@@ -1,2 +1,1 @@
 """AutomatedWorkflow application package."""
-

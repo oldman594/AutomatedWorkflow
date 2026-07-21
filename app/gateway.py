@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from contextlib import suppress
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -10,7 +11,6 @@ from app.config import Settings
 from app.models import RunnerRegistration, Stage, TaskStatus
 from app.protocol import MessageEnvelope, MessageType
 from app.storage import Storage
-
 
 STEP_STAGES = {
     "clone": Stage.READER,
@@ -24,9 +24,7 @@ STEP_STAGES = {
 
 
 class RunnerGatewaySession:
-    def __init__(
-        self, websocket: WebSocket, storage: Storage, settings: Settings
-    ) -> None:
+    def __init__(self, websocket: WebSocket, storage: Storage, settings: Settings) -> None:
         self.websocket = websocket
         self.storage = storage
         self.settings = settings
@@ -48,9 +46,7 @@ class RunnerGatewaySession:
         while True:
             await self._dispatch_control_messages()
             try:
-                raw = await asyncio.wait_for(
-                    self.websocket.receive_text(), timeout=1.0
-                )
+                raw = await asyncio.wait_for(self.websocket.receive_text(), timeout=1.0)
             except TimeoutError:
                 continue
             envelope = MessageEnvelope.model_validate_json(raw)
@@ -89,14 +85,12 @@ class RunnerGatewaySession:
         self.runner_id = envelope.runner_id
         try:
             self.storage.touch_runner(self.runner_id)
-        except KeyError:
+        except KeyError as exc:
             await self.websocket.close(code=1008, reason="Runner is not registered")
-            raise WebSocketDisconnect(code=1008)
+            raise WebSocketDisconnect(code=1008) from exc
         self.storage.record_runner_message(envelope, "runner")
         last_seq = int(envelope.payload.get("lastSeq") or 0)
-        for pending in self.storage.list_runner_messages(
-            self.runner_id, "server", last_seq
-        ):
+        for pending in self.storage.list_runner_messages(self.runner_id, "server", last_seq):
             await self.websocket.send_text(pending.to_json())
         await self._send(
             MessageType.ACK,
@@ -117,11 +111,7 @@ class RunnerGatewaySession:
 
         if envelope.type == MessageType.HEARTBEAT:
             payload = envelope.payload
-            metrics = {
-                key: payload[key]
-                for key in ("cpu", "memory", "disk")
-                if key in payload
-            }
+            metrics = {key: payload[key] for key in ("cpu", "memory", "disk") if key in payload}
             self.storage.touch_runner(
                 self.runner_id,
                 status=str(payload.get("status") or "idle"),
@@ -133,9 +123,7 @@ class RunnerGatewaySession:
             )
             return
         if envelope.type == MessageType.CAPABILITY:
-            capabilities = [
-                name for name, enabled in envelope.payload.items() if enabled
-            ]
+            capabilities = [name for name, enabled in envelope.payload.items() if enabled]
             self.storage.update_runner_capabilities(self.runner_id, capabilities)
         elif envelope.type == MessageType.TASK_ACCEPTED:
             self._update_task(
@@ -154,10 +142,8 @@ class RunnerGatewaySession:
                 if step in STEP_STAGES:
                     fields["stage"] = STEP_STAGES[step]
                 else:
-                    try:
+                    with suppress(ValueError):
                         fields["stage"] = Stage(step)
-                    except ValueError:
-                        pass
                 if "percent" in envelope.payload:
                     percent = envelope.payload["percent"]
                     if percent is not None:
@@ -202,9 +188,7 @@ class RunnerGatewaySession:
                     str(envelope.payload.get("content") or ""),
                 )
         elif envelope.type == MessageType.PERMISSION_REQUEST:
-            self._update_task(
-                envelope.task_id, status=TaskStatus.WAIT_PERMISSION
-            )
+            self._update_task(envelope.task_id, status=TaskStatus.WAIT_PERMISSION)
             await self._send(
                 MessageType.PERMISSION_RESULT,
                 task_id=envelope.task_id,
@@ -269,9 +253,7 @@ class RunnerGatewaySession:
             return
         self.storage.update_task(task_id, **fields)
 
-    async def _ack(
-        self, envelope: MessageEnvelope, duplicate: bool = False
-    ) -> None:
+    async def _ack(self, envelope: MessageEnvelope, duplicate: bool = False) -> None:
         await self._send(
             MessageType.ACK,
             task_id=envelope.task_id,
@@ -299,20 +281,16 @@ class RunnerGatewaySession:
         return envelope
 
 
-async def run_runner_websocket(
-    websocket: WebSocket, storage: Storage, settings: Settings
-) -> None:
+async def run_runner_websocket(websocket: WebSocket, storage: Storage, settings: Settings) -> None:
     authorization = websocket.headers.get("authorization", "")
     scheme, _, header_token = authorization.partition(" ")
     query_token = websocket.query_params.get("token", "")
     token = header_token if scheme.lower() == "bearer" else query_token
-    if not settings.runner_token or not secrets.compare_digest(
-        token, settings.runner_token
-    ):
+    if not settings.runner_token or not secrets.compare_digest(token, settings.runner_token):
         await websocket.close(code=1008, reason="Invalid runner token")
         return
     await websocket.accept()
     try:
         await RunnerGatewaySession(websocket, storage, settings).run()
-    except (WebSocketDisconnect, asyncio.TimeoutError):
+    except (TimeoutError, WebSocketDisconnect):
         return

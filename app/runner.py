@@ -5,11 +5,11 @@ import platform
 import re
 import socket
 import sys
-import time
+from collections.abc import Callable
 from pathlib import Path
 from threading import Event as ThreadEvent
 from threading import Thread
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
@@ -45,13 +45,9 @@ class RemoteStorage:
         self.runner_id = runner_id
         self._owns_client = client is None
         self._path_prefix = "" if client is None else "/api"
-        self.client = client or httpx.Client(
-            base_url=server.rstrip("/") + "/api", timeout=30
-        )
+        self.client = client or httpx.Client(base_url=server.rstrip("/") + "/api", timeout=30)
         self.client.headers["Authorization"] = f"Bearer {token}"
-        self.message_sender: (
-            Callable[[MessageType, str | None, dict | None], object] | None
-        ) = None
+        self.message_sender: Callable[[MessageType, str | None, dict | None], object] | None = None
         self.task_cache: dict[str, Task] = {}
         self.artifact_cache: dict[str, list[Artifact]] = {}
         self.local_event_id = 0
@@ -73,9 +69,7 @@ class RemoteStorage:
         return RunnerInfo.model_validate(response.json())
 
     def heartbeat(self) -> RunnerInfo:
-        response = self._request(
-            "POST", f"/runner/{self.runner_id}/heartbeat"
-        )
+        response = self._request("POST", f"/runner/{self.runner_id}/heartbeat")
         return RunnerInfo.model_validate(response.json())
 
     def lease(self) -> Task | None:
@@ -85,9 +79,7 @@ class RemoteStorage:
     def get_task(self, task_id: str) -> Task:
         if self.message_sender and task_id in self.task_cache:
             return self.task_cache[task_id]
-        response = self._request(
-            "GET", f"/runner/{self.runner_id}/tasks/{task_id}"
-        )
+        response = self._request("GET", f"/runner/{self.runner_id}/tasks/{task_id}")
         return Task.model_validate(response.json())
 
     def update_task(self, task_id: str, **fields: Any) -> Task:
@@ -97,8 +89,7 @@ class RemoteStorage:
             self._emit_task_update(task_id, fields)
             return task
         payload = {
-            key: value.value if hasattr(value, "value") else value
-            for key, value in fields.items()
+            key: value.value if hasattr(value, "value") else value for key, value in fields.items()
         }
         response = self._request(
             "PATCH",
@@ -184,9 +175,7 @@ class RemoteStorage:
     def list_artifacts(self, task_id: str) -> list[Artifact]:
         if self.message_sender:
             return list(self.artifact_cache.get(task_id, []))
-        response = self._request(
-            "GET", f"/runner/{self.runner_id}/tasks/{task_id}/artifacts"
-        )
+        response = self._request("GET", f"/runner/{self.runner_id}/tasks/{task_id}/artifacts")
         return [Artifact.model_validate(item) for item in response.json()]
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
@@ -198,13 +187,11 @@ class RemoteStorage:
             detail = ""
             if isinstance(exc, httpx.HTTPStatusError):
                 detail = exc.response.text[-2000:]
-            raise RunnerConnectionError(
-                f"Runner request failed: {method} {path} {detail}"
-            ) from exc
+            raise RunnerConnectionError(f"Runner request failed: {method} {path} {detail}") from exc
 
     def _emit_task_update(self, task_id: str, fields: dict[str, Any]) -> None:
         status = fields.get("status")
-        if hasattr(status, "value"):
+        if isinstance(status, TaskStatus):
             status = status.value
         if status == TaskStatus.WAITING_APPROVAL:
             self._emit(
@@ -224,7 +211,7 @@ class RemoteStorage:
             self._emit(MessageType.TASK_CANCELLED, task_id, {})
             return
         stage = fields.get("stage")
-        if hasattr(stage, "value"):
+        if isinstance(stage, Stage):
             stage = stage.value
         if stage is not None or "progress" in fields or status == TaskStatus.RUNNING:
             self._emit(
@@ -421,8 +408,7 @@ def main() -> None:
         args.server,
         token,
         registration,
-        args.state_file
-        or settings.worktree_root.parent / f"runner-{registration.id}-state.json",
+        args.state_file or settings.worktree_root.parent / f"runner-{registration.id}-state.json",
         capability_flags(),
         max(2.0, args.heartbeat_seconds),
     )

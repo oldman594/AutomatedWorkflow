@@ -55,11 +55,11 @@ class MessageEnvelope(BaseModel):
         runner_id: str | None = None,
         task_id: str | None = None,
         payload: dict[str, Any] | None = None,
-    ) -> "MessageEnvelope":
+    ) -> MessageEnvelope:
         return cls(
             type=message_type,
             seq=seq,
-            runner_id=runner_id,
-            task_id=task_id,
+            runnerId=runner_id,
+            taskId=task_id,
             payload=payload or {},
         )

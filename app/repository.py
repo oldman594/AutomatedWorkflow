@@ -4,24 +4,63 @@ import os
 import shlex
 import shutil
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
-
 
 IGNORED_PARTS = {
-    ".git", ".venv", "node_modules", "dist", "build", "target",
-    "__pycache__", ".idea", ".vscode", "vendor",
+    ".git",
+    ".venv",
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    "__pycache__",
+    ".idea",
+    ".vscode",
+    "vendor",
 }
 TEXT_SUFFIXES = {
-    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
-    ".py", ".rs", ".go", ".java", ".kt", ".js", ".jsx", ".ts",
-    ".tsx", ".vue", ".svelte", ".json", ".toml", ".yaml", ".yml",
-    ".md", ".txt", ".sql", ".sh", ".cmake", ".gradle", ".properties",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".py",
+    ".rs",
+    ".go",
+    ".java",
+    ".kt",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".svelte",
+    ".json",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".md",
+    ".txt",
+    ".sql",
+    ".sh",
+    ".cmake",
+    ".gradle",
+    ".properties",
 }
 SPECIAL_TEXT_FILES = {
-    "CMakeLists.txt", "Makefile", "Dockerfile", "Cargo.lock", "go.mod",
-    "go.sum", "requirements.txt", "AGENTS.md",
+    "CMakeLists.txt",
+    "Makefile",
+    "Dockerfile",
+    "Cargo.lock",
+    "go.mod",
+    "go.sum",
+    "requirements.txt",
+    "AGENTS.md",
 }
 
 
@@ -80,11 +119,15 @@ class Repository:
         if not self._valid_ref(branch):
             raise RepositoryError("Invalid branch name")
         exists = self.run(["git", "show-ref", "--verify", f"refs/heads/{branch}"], check=False)
-        command = ["git", "checkout", branch] if exists.returncode == 0 else ["git", "checkout", "-b", branch]
+        command = (
+            ["git", "checkout", branch]
+            if exists.returncode == 0
+            else ["git", "checkout", "-b", branch]
+        )
         self.run(command)
         return branch
 
-    def create_worktree(self, destination: Path, branch: str) -> "Repository":
+    def create_worktree(self, destination: Path, branch: str) -> Repository:
         destination = destination.expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.exists():
@@ -95,9 +138,12 @@ class Repository:
         if not has_head:
             self.run(["git", "worktree", "add", "--orphan", "-b", branch, str(destination)])
             return Repository(destination, [destination.parent, *self.allowed_roots])
-        branch_exists = self.run(
-            ["git", "show-ref", "--verify", f"refs/heads/{branch}"], check=False
-        ).returncode == 0
+        branch_exists = (
+            self.run(
+                ["git", "show-ref", "--verify", f"refs/heads/{branch}"], check=False
+            ).returncode
+            == 0
+        )
         command = ["git", "worktree", "add"]
         if not branch_exists:
             command.extend(["-b", branch])
@@ -105,16 +151,12 @@ class Repository:
         self.run(command)
         return Repository(destination, [destination.parent, *self.allowed_roots])
 
-    def copy_local_changes_to(
-        self, destination: "Repository", max_bytes: int
-    ) -> LocalSnapshot:
+    def copy_local_changes_to(self, destination: Repository, max_bytes: int) -> LocalSnapshot:
         source_status = self.status()
         if not source_status.strip():
             return LocalSnapshot([], None, "")
 
-        has_head = self.run(
-            ["git", "rev-parse", "--verify", "HEAD"], check=False
-        ).returncode == 0
+        has_head = self.run(["git", "rev-parse", "--verify", "HEAD"], check=False).returncode == 0
         tracked: list[str] = []
         patch = b""
         if has_head:
@@ -128,14 +170,17 @@ class Repository:
                     "from the source repository HEAD"
                 )
             tracked = self._null_paths(
-                self.run(
-                    ["git", "diff", "--name-only", "-z", "HEAD", "--"]
-                ).stdout
+                self.run(["git", "diff", "--name-only", "-z", "HEAD", "--"]).stdout
             )
             completed = subprocess.run(
                 [
-                    "git", "diff", "--binary", "--full-index",
-                    "--ita-visible-in-index", "HEAD", "--",
+                    "git",
+                    "diff",
+                    "--binary",
+                    "--full-index",
+                    "--ita-visible-in-index",
+                    "HEAD",
+                    "--",
                 ],
                 cwd=self.path,
                 capture_output=True,
@@ -147,9 +192,7 @@ class Repository:
             patch = completed.stdout
 
         untracked = self._null_paths(
-            self.run(
-                ["git", "ls-files", "-z", "--others", "--exclude-standard"]
-            ).stdout
+            self.run(["git", "ls-files", "-z", "--others", "--exclude-standard"]).stdout
         )
         total_bytes = len(patch)
         sources: list[tuple[str, Path]] = []
@@ -175,9 +218,7 @@ class Repository:
             sources.append((relative, source))
 
         if len(patch) > max_bytes:
-            raise RepositoryError(
-                f"Local changes exceed snapshot size limit ({max_bytes} bytes)"
-            )
+            raise RepositoryError(f"Local changes exceed snapshot size limit ({max_bytes} bytes)")
         if patch:
             applied = subprocess.run(
                 ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
@@ -201,9 +242,15 @@ class Repository:
         destination.run(["git", "add", "-A"])
         destination.run(
             [
-                "git", "-c", "user.name=AutoFlow", "-c",
-                "user.email=autoflow@local", "-c", "core.hooksPath=/dev/null",
-                "commit", "-m",
+                "git",
+                "-c",
+                "user.name=AutoFlow",
+                "-c",
+                "user.email=autoflow@local",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-m",
                 "chore: snapshot local workspace",
             ]
         )
@@ -226,8 +273,23 @@ class Repository:
             return ""
         pattern = "|".join(self._escape_regex(term) for term in terms)
         result = self.run(
-            ["rg", "-n", "--hidden", "--glob", "!.git", "--glob", "!node_modules",
-             "--glob", "!build", "--glob", "!target", "-i", "-e", pattern, "."],
+            [
+                "rg",
+                "-n",
+                "--hidden",
+                "--glob",
+                "!.git",
+                "--glob",
+                "!node_modules",
+                "--glob",
+                "!build",
+                "--glob",
+                "!target",
+                "-i",
+                "-e",
+                pattern,
+                ".",
+            ],
             check=False,
         )
         return "\n".join(result.stdout.splitlines()[:limit])
@@ -251,7 +313,15 @@ class Repository:
             if candidate.is_file():
                 candidates.append(candidate)
 
-        names = {"AGENTS.md", "README.md", "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "CMakeLists.txt"}
+        names = {
+            "AGENTS.md",
+            "README.md",
+            "pyproject.toml",
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
+            "CMakeLists.txt",
+        }
         for name in names:
             candidate = self.path / name
             if candidate.is_file():
@@ -272,8 +342,8 @@ class Repository:
             if remaining <= 0:
                 break
             content = content[:remaining]
-            relative = candidate.relative_to(self.path)
-            chunk = f"\n--- FILE: {relative} ---\n{content}"
+            relative_path = candidate.relative_to(self.path)
+            chunk = f"\n--- FILE: {relative_path} ---\n{content}"
             chunks.append(chunk)
             total += len(chunk)
         return "".join(chunks)
@@ -282,7 +352,9 @@ class Repository:
         written: list[str] = []
         for relative, content in changes:
             target = self._safe_path(relative)
-            if target == self.path or any(part in IGNORED_PARTS for part in target.relative_to(self.path).parts):
+            if target == self.path or any(
+                part in IGNORED_PARTS for part in target.relative_to(self.path).parts
+            ):
                 raise RepositoryError(f"Refusing to write protected path: {relative}")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
@@ -291,7 +363,9 @@ class Repository:
 
     def diff(self) -> str:
         tracked = self.run(["git", "diff", "--no-ext-diff", "--binary"]).stdout
-        untracked = self.run(["git", "ls-files", "--others", "--exclude-standard"]).stdout.splitlines()
+        untracked = self.run(
+            ["git", "ls-files", "--others", "--exclude-standard"]
+        ).stdout.splitlines()
         pieces = [tracked]
         for path in untracked:
             result = self.run(["git", "diff", "--no-index", "--", "/dev/null", path], check=False)
@@ -318,9 +392,7 @@ class Repository:
 
     def apply_patch(self, patch: str, expected_head: str | None) -> None:
         if self.head_oid() != expected_head:
-            raise RepositoryError(
-                "Source repository HEAD changed while the workflow was running"
-            )
+            raise RepositoryError("Source repository HEAD changed while the workflow was running")
         if not patch.strip():
             return
         completed = subprocess.run(
@@ -353,7 +425,9 @@ class Repository:
         preview = ", ".join(generated[:12])
         suffix = " ..." if len(generated) > 12 else ""
         return [
-            "Generated or cache files are not ignored: " + preview + suffix
+            "Generated or cache files are not ignored: "
+            + preview
+            + suffix
             + ". Add appropriate ignore rules without deleting source files."
         ]
 
@@ -374,7 +448,10 @@ class Repository:
         if (self.path / "go.mod").exists():
             return "go build ./...", "go test ./..."
         if (self.path / "CMakeLists.txt").exists():
-            return "cmake -S . -B build && cmake --build build -j", "ctest --test-dir build --output-on-failure"
+            return (
+                "cmake -S . -B build && cmake --build build -j",
+                "ctest --test-dir build --output-on-failure",
+            )
         if (self.path / "Makefile").exists():
             return "make -j", "make test"
         return None, None
@@ -397,7 +474,9 @@ class Repository:
         completed = subprocess.run(
             command, cwd=self.path, text=True, capture_output=True, timeout=120
         )
-        result = CommandResult(shlex.join(command), completed.returncode, completed.stdout, completed.stderr)
+        result = CommandResult(
+            shlex.join(command), completed.returncode, completed.stdout, completed.stderr
+        )
         if check and completed.returncode != 0:
             raise RepositoryError(f"Command failed: {result.command}\n{result.combined[-4000:]}")
         return result
@@ -415,7 +494,11 @@ class Repository:
         for path in directory.rglob("*"):
             if len(files) >= 80:
                 break
-            if path.is_file() and not any(part in IGNORED_PARTS for part in path.parts) and self._is_text_file(path):
+            if (
+                path.is_file()
+                and not any(part in IGNORED_PARTS for part in path.parts)
+                and self._is_text_file(path)
+            ):
                 files.append(path)
         return files
 
@@ -434,11 +517,24 @@ class Repository:
     @staticmethod
     def _valid_ref(value: str) -> bool:
         forbidden = {" ", "..", "~", "^", ":", "?", "*", "[", "\\"}
-        return bool(value) and not any(item in value for item in forbidden) and not value.startswith("-")
+        return (
+            bool(value)
+            and not any(item in value for item in forbidden)
+            and not value.startswith("-")
+        )
 
     @staticmethod
     def _validate_shell_command(command: str) -> None:
-        blocked = ["rm -rf", "git reset --hard", "git clean -fd", "git push", "sudo ", "curl ", "wget ", "> /dev/"]
+        blocked = [
+            "rm -rf",
+            "git reset --hard",
+            "git clean -fd",
+            "git push",
+            "sudo ",
+            "curl ",
+            "wget ",
+            "> /dev/",
+        ]
         lowered = command.lower()
         if any(token in lowered for token in blocked):
             raise RepositoryError("Command rejected by safety policy")

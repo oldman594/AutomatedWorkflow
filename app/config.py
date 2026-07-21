@@ -7,7 +7,6 @@ from typing import Annotated, Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-
 ProviderName = Literal["openai", "deepseek", "doubao", "qwen", "codex_cli"]
 AGENT_ROLES = ("product", "reader", "planner", "architecture", "coder", "reviewer", "acceptance")
 
@@ -59,15 +58,11 @@ class Settings(BaseSettings):
     )
     doubao_api_key: str | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "ARK_API_KEY", "DOUBAO_API_KEY", "AUTOFLOW_DOUBAO_API_KEY"
-        ),
+        validation_alias=AliasChoices("ARK_API_KEY", "DOUBAO_API_KEY", "AUTOFLOW_DOUBAO_API_KEY"),
     )
     qwen_api_key: str | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "DASHSCOPE_API_KEY", "QWEN_API_KEY", "AUTOFLOW_QWEN_API_KEY"
-        ),
+        validation_alias=AliasChoices("DASHSCOPE_API_KEY", "QWEN_API_KEY", "AUTOFLOW_QWEN_API_KEY"),
     )
     agent_product_provider: ProviderName | None = None
     agent_product_model: str | None = None

@@ -142,15 +142,9 @@ def test_product_manager_refines_until_reader_approves(tmp_path: Path) -> None:
 def test_successful_workflow_syncs_ai_changes_to_local_repository(tmp_path: Path) -> None:
     repository = tmp_path / "repo"
     repository.mkdir()
-    subprocess.run(
-        ["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"], cwd=repository, check=True
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Test User"], cwd=repository, check=True
-    )
+    subprocess.run(["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repository, check=True)
     (repository / "README.md").write_text("fixture\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repository, check=True)
     subprocess.run(
@@ -181,10 +175,10 @@ def test_successful_workflow_syncs_ai_changes_to_local_repository(tmp_path: Path
     completed = storage.get_task(task.id)
     assert completed.status == TaskStatus.WAITING_APPROVAL
     assert (repository / "partial.py").read_text(encoding="utf-8") == "STATUS = 'complete'\n"
-    assert (repository / "result.py").read_text(encoding="utf-8") == "print('local feature ready')\n"
-    delivery = next(
-        item for item in storage.list_artifacts(task.id) if item.kind == "delivery"
-    )
+    assert (repository / "result.py").read_text(
+        encoding="utf-8"
+    ) == "print('local feature ready')\n"
+    delivery = next(item for item in storage.list_artifacts(task.id) if item.kind == "delivery")
     manifest = json.loads(delivery.content)
     assert manifest["source_applied"] is True
     assert manifest["run_output"] == "local feature ready"

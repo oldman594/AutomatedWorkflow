@@ -71,9 +71,10 @@ def test_websocket_protocol_assigns_and_tracks_task(tmp_path, monkeypatch) -> No
                     },
                 )
             )
-            assert MessageEnvelope.model_validate_json(
-                websocket.receive_text()
-            ).type == MessageType.ACK
+            assert (
+                MessageEnvelope.model_validate_json(websocket.receive_text()).type
+                == MessageType.ACK
+            )
 
             created = client.post(
                 "/api/tasks",
@@ -96,12 +97,11 @@ def test_websocket_protocol_assigns_and_tracks_task(tmp_path, monkeypatch) -> No
             websocket.send_text(
                 envelope(MessageType.ACK, 3, task_id=task_id, payload={"ackSeq": assigned.seq})
             )
-            websocket.send_text(
-                envelope(MessageType.TASK_ACCEPTED, 4, task_id=task_id)
+            websocket.send_text(envelope(MessageType.TASK_ACCEPTED, 4, task_id=task_id))
+            assert (
+                MessageEnvelope.model_validate_json(websocket.receive_text()).type
+                == MessageType.ACK
             )
-            assert MessageEnvelope.model_validate_json(
-                websocket.receive_text()
-            ).type == MessageType.ACK
 
             websocket.send_text(
                 envelope(
@@ -115,9 +115,10 @@ def test_websocket_protocol_assigns_and_tracks_task(tmp_path, monkeypatch) -> No
                     },
                 )
             )
-            assert MessageEnvelope.model_validate_json(
-                websocket.receive_text()
-            ).type == MessageType.HEARTBEAT_ACK
+            assert (
+                MessageEnvelope.model_validate_json(websocket.receive_text()).type
+                == MessageType.HEARTBEAT_ACK
+            )
 
             progress = envelope(
                 MessageType.TASK_PROGRESS,
@@ -194,21 +195,17 @@ def test_websocket_protocol_assigns_and_tracks_task(tmp_path, monkeypatch) -> No
         assert detail["task"]["status"] == "waiting_approval"
         assert detail["task"]["stage"] == "coder"
         assert detail["task"]["progress"] == 100
-        assert len(
-            [event for event in detail["events"] if event["message"] == "Generating local code"]
-        ) == 1
-        assert any(
-            event["data"].get("output") == "Compiling local project"
-            for event in detail["events"]
+        assert (
+            len(
+                [event for event in detail["events"] if event["message"] == "Generating local code"]
+            )
+            == 1
         )
         assert any(
-            event["data"].get("path") == "src/main.rs"
-            for event in detail["events"]
+            event["data"].get("output") == "Compiling local project" for event in detail["events"]
         )
-        assert any(
-            event["data"].get("delta") == "pub fn"
-            for event in detail["events"]
-        )
+        assert any(event["data"].get("path") == "src/main.rs" for event in detail["events"])
+        assert any(event["data"].get("delta") == "pub fn" for event in detail["events"])
         runner = client.get("/api/runners").json()[0]
         assert runner["status"] == "busy"
         assert runner["metrics"] == {"cpu": 20, "memory": 55, "disk": 70}
@@ -274,9 +271,7 @@ def test_server_cancels_running_websocket_task(tmp_path, monkeypatch) -> None:
             task_id = created["id"]
             client.post(f"/api/tasks/{task_id}/start")
             assigned = MessageEnvelope.model_validate_json(websocket.receive_text())
-            websocket.send_text(
-                envelope(MessageType.TASK_ACCEPTED, 2, task_id=task_id)
-            )
+            websocket.send_text(envelope(MessageType.TASK_ACCEPTED, 2, task_id=task_id))
             websocket.receive_text()
 
             client.post(f"/api/tasks/{task_id}/cancel")
@@ -291,9 +286,7 @@ def test_server_cancels_running_websocket_task(tmp_path, monkeypatch) -> None:
                     payload={"ackSeq": cancelled.seq},
                 )
             )
-            websocket.send_text(
-                envelope(MessageType.TASK_CANCELLED, 4, task_id=task_id)
-            )
+            websocket.send_text(envelope(MessageType.TASK_CANCELLED, 4, task_id=task_id))
             websocket.receive_text()
 
         assert client.get(f"/api/tasks/{task_id}").json()["task"]["status"] == "cancelled"

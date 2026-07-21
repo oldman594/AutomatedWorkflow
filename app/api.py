@@ -5,7 +5,7 @@ import io
 import json
 import secrets
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
@@ -48,15 +48,13 @@ def require_runner_token(
     if not settings.runner_token:
         raise HTTPException(status_code=503, detail="Local Runner is not configured")
     scheme, _, token = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not secrets.compare_digest(
-        token, settings.runner_token
-    ):
+    if scheme.lower() != "bearer" or not secrets.compare_digest(token, settings.runner_token):
         raise HTTPException(status_code=401, detail="Invalid runner token")
 
 
 def runner_is_online(runner: RunnerInfo, settings: Settings) -> RunnerInfo:
     last_seen = datetime.fromisoformat(runner.last_seen)
-    age = (datetime.now(timezone.utc) - last_seen).total_seconds()
+    age = (datetime.now(UTC) - last_seen).total_seconds()
     return runner.model_copy(update={"online": age <= settings.runner_offline_seconds})
 
 
@@ -162,9 +160,7 @@ def download_task_artifacts(
             status_code=409,
             detail="Remote Runner artifacts remain on the user's computer",
         )
-    worktree = next(
-        (item.content for item in reversed(artifacts) if item.kind == "worktree"), None
-    )
+    worktree = next((item.content for item in reversed(artifacts) if item.kind == "worktree"), None)
     if not worktree:
         raise HTTPException(status_code=409, detail="Task has no generated workspace")
     try:
@@ -191,9 +187,7 @@ def download_task_artifacts(
             notes=["Legacy task: no structured run instructions were generated"],
         )
 
-    diff = next(
-        (item.content for item in reversed(artifacts) if item.kind == "diff"), ""
-    )
+    diff = next((item.content for item in reversed(artifacts) if item.kind == "diff"), "")
     buffer = io.BytesIO()
     total_bytes = 0
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -331,7 +325,9 @@ async def stream_events(
             task = storage.get_task(task_id)
             yield f"event: status\ndata: {task.model_dump_json()}\n\n"
             if task.status in {
-                TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED,
+                TaskStatus.COMPLETED,
+                TaskStatus.FAILED,
+                TaskStatus.CANCELLED,
                 TaskStatus.WAITING_APPROVAL,
             }:
                 break

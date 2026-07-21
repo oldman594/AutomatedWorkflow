@@ -5,9 +5,10 @@ import os
 import queue
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 from threading import Event, Lock, Thread
-from typing import Callable
+from typing import cast
 from urllib.parse import urlsplit, urlunsplit
 
 from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -69,9 +70,7 @@ class ProtocolState:
     def discard_types(self, types: set[MessageType]) -> None:
         with self.lock:
             self.pending = {
-                seq: item
-                for seq, item in self.pending.items()
-                if item.type not in types
+                seq: item for seq, item in self.pending.items() if item.type not in types
             }
             self._save_locked()
 
@@ -90,10 +89,7 @@ class ProtocolState:
             self.registered = bool(data.get("registered", False))
             self.pending = {
                 item.seq: item
-                for item in (
-                    MessageEnvelope.model_validate(raw)
-                    for raw in data.get("pending", [])
-                )
+                for item in (MessageEnvelope.model_validate(raw) for raw in data.get("pending", []))
             }
         except (OSError, ValueError, TypeError):
             self.pending = {}
@@ -214,7 +210,8 @@ class RunnerProtocolClient:
                     ping_interval=20,
                     ping_timeout=20,
                     max_size=16 * 1024 * 1024,
-                ) as websocket:
+                ) as opened:
+                    websocket = cast(ClientConnection, opened)
                     with self.connection_lock:
                         self.connection = websocket
                     self.ready.clear()
@@ -338,9 +335,7 @@ class RunnerProtocolClient:
         except (ConnectionClosed, OSError):
             return
 
-    def _send_on(
-        self, websocket: ClientConnection, envelope: MessageEnvelope
-    ) -> None:
+    def _send_on(self, websocket: ClientConnection, envelope: MessageEnvelope) -> None:
         with self.send_lock:
             websocket.send(envelope.to_json())
 

@@ -1,7 +1,7 @@
-from pathlib import Path
-import time
 import io
+import time
 import zipfile
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +15,7 @@ def test_health_and_task_lifecycle(tmp_path: Path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     import subprocess
+
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
@@ -31,14 +32,17 @@ def test_health_and_task_lifecycle(tmp_path: Path, monkeypatch) -> None:
     with TestClient(app) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        response = client.post("/api/tasks", json={
-            "title": "API task",
-            "requirement": "Check the API task lifecycle",
-            "repository": str(repo),
-            "branch": None,
-            "build_command": "true",
-            "test_command": "true",
-        })
+        response = client.post(
+            "/api/tasks",
+            json={
+                "title": "API task",
+                "requirement": "Check the API task lifecycle",
+                "repository": str(repo),
+                "branch": None,
+                "build_command": "true",
+                "test_command": "true",
+            },
+        )
         assert response.status_code == 201
         task_id = response.json()["id"]
         assert response.json()["branch"] == ""
@@ -57,8 +61,16 @@ def test_health_and_task_lifecycle(tmp_path: Path, monkeypatch) -> None:
         assert detail["task"]["status"] == "waiting_approval"
         kinds = {artifact["kind"] for artifact in detail["artifacts"]}
         assert {
-            "product_spec", "requirement_assessment", "plan", "reading", "design",
-            "diff", "review", "acceptance", "mr_description", "local_snapshot",
+            "product_spec",
+            "requirement_assessment",
+            "plan",
+            "reading",
+            "design",
+            "diff",
+            "review",
+            "acceptance",
+            "mr_description",
+            "local_snapshot",
         } <= kinds
         acceptance_rounds = [
             artifact for artifact in detail["artifacts"] if artifact["kind"] == "acceptance"
@@ -79,9 +91,7 @@ def test_health_and_task_lifecycle(tmp_path: Path, monkeypatch) -> None:
             assert "NEEDS HUMAN REVIEW" in delivery_doc
             assert "## Run" in delivery_doc
 
-        rejected_commit = client.post(
-            f"/api/tasks/{task_id}/approve", json={"action": "commit"}
-        )
+        rejected_commit = client.post(f"/api/tasks/{task_id}/approve", json={"action": "commit"})
         assert rejected_commit.status_code == 409
 
         approved = client.post(f"/api/tasks/{task_id}/approve", json={"action": "complete"})
@@ -109,9 +119,7 @@ def test_local_runner_registers_leases_and_reports_task(tmp_path: Path, monkeypa
         unauthorized = client.post("/api/runner/register", json=registration)
         assert unauthorized.status_code == 401
 
-        remote = RemoteStorage(
-            "http://testserver", "runner-test-token", "devbox-01", client=client
-        )
+        remote = RemoteStorage("http://testserver", "runner-test-token", "devbox-01", client=client)
         runner = remote.register(RunnerRegistration(**registration))
         assert runner.online is True
         assert remote.heartbeat().id == "devbox-01"

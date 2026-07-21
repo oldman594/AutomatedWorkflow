@@ -10,6 +10,7 @@ from app.agents import AgentClient
 from app.config import Settings
 from app.models import (
     AcceptanceOutput,
+    CodeOutput,
     DeliveryOutput,
     PlanOutput,
     ProductSpec,
@@ -21,7 +22,6 @@ from app.models import (
 )
 from app.repository import CommandResult, Repository, RepositoryError
 from app.storage import Storage
-
 
 STAGE_PROGRESS = {
     Stage.PRODUCT: 6,
@@ -73,9 +73,7 @@ class WorkflowEngine:
                 error=None,
                 cancel_requested=False,
             )
-            self.storage.add_event(
-                task_id, f"任务已进入 Local Runner 队列：{task.runner_id}"
-            )
+            self.storage.add_event(task_id, f"任务已进入 Local Runner 队列：{task.runner_id}")
             return self.storage.get_task(task_id)
         if not self.settings.mock_llm:
             route_errors = self.settings.route_errors()
@@ -88,7 +86,11 @@ class WorkflowEngine:
         self.storage.update_task(
             task_id, status=TaskStatus.QUEUED, progress=1, error=None, cancel_requested=False
         )
-        message = "失败任务已重新进入执行队列" if task.status == TaskStatus.FAILED else "任务已进入执行队列"
+        message = (
+            "失败任务已重新进入执行队列"
+            if task.status == TaskStatus.FAILED
+            else "任务已进入执行队列"
+        )
         self.storage.add_event(task_id, message)
         self._executor.submit(self._run_guarded, task_id)
         return self.storage.get_task(task_id)
@@ -105,7 +107,9 @@ class WorkflowEngine:
         if task.status != TaskStatus.WAITING_APPROVAL:
             raise ValueError("Task is not waiting for approval")
         artifacts = self.storage.list_artifacts(task_id)
-        worktree = next((item.content for item in reversed(artifacts) if item.kind == "worktree"), None)
+        worktree = next(
+            (item.content for item in reversed(artifacts) if item.kind == "worktree"), None
+        )
         if action == "commit":
             if task.runner_id:
                 raise ValueError("Local Runner 任务请在用户电脑的原仓库中手动 Commit")
@@ -119,16 +123,22 @@ class WorkflowEngine:
             )
             if acceptance_raw and not json.loads(acceptance_raw).get("accepted", False):
                 raise ValueError("产品验收未通过，不能自动创建 Commit")
-            review_raw = next((item.content for item in reversed(artifacts) if item.kind == "review"), "{}")
+            review_raw = next(
+                (item.content for item in reversed(artifacts) if item.kind == "review"), "{}"
+            )
             review = json.loads(review_raw)
             if review.get("findings"):
                 raise ValueError("代码审查仍有 findings，不能自动创建 Commit")
-            existing_commit = next((item.content for item in reversed(artifacts) if item.kind == "commit"), None)
+            existing_commit = next(
+                (item.content for item in reversed(artifacts) if item.kind == "commit"), None
+            )
             if not existing_commit:
                 repository = Repository(worktree, self.settings.allowed_roots)
                 commit_hash = repository.commit(review.get("mr_title", task.title))
                 self.storage.add_artifact(task_id, "commit", commit_hash)
-                self.storage.add_event(task_id, f"已创建 Commit：{commit_hash[:12]}", stage=Stage.DELIVERY)
+                self.storage.add_event(
+                    task_id, f"已创建 Commit：{commit_hash[:12]}", stage=Stage.DELIVERY
+                )
         self.storage.add_event(task_id, "人工审批已通过", stage=Stage.DELIVERY)
         return self.storage.update_task(
             task_id, status=TaskStatus.COMPLETED, stage=Stage.DELIVERY, progress=100
@@ -168,9 +178,7 @@ class WorkflowEngine:
             )
 
         if task.include_local_changes:
-            snapshot = source.copy_local_changes_to(
-                repository, self.settings.max_download_bytes
-            )
+            snapshot = source.copy_local_changes_to(repository, self.settings.max_download_bytes)
             self.storage.add_artifact(
                 task_id,
                 "local_snapshot",
@@ -206,7 +214,9 @@ class WorkflowEngine:
             plan.acceptance_criteria = product_spec.acceptance_criteria
         self.storage.add_artifact(task_id, "plan", plan.model_dump_json(indent=2))
         self.storage.add_event(
-            task_id, f"计划已生成，共 {len(plan.todos)} 个 Todo", stage=Stage.PLANNER,
+            task_id,
+            f"计划已生成，共 {len(plan.todos)} 个 Todo",
+            stage=Stage.PLANNER,
             data={"todos": plan.todos, "questions": plan.questions},
         )
         self._check_cancelled(task_id)
@@ -220,7 +230,9 @@ class WorkflowEngine:
         self.storage.add_artifact(task_id, "context_manifest", context_manifest)
         self.storage.add_artifact(task_id, "reading", reading.model_dump_json(indent=2))
         self.storage.add_event(
-            task_id, "仓库上下文阅读完成", stage=Stage.READER,
+            task_id,
+            "仓库上下文阅读完成",
+            stage=Stage.READER,
             data={
                 "characters": len(context),
                 "files": context_manifest.splitlines(),
@@ -242,7 +254,9 @@ class WorkflowEngine:
         written = self._apply_code(repository, code, task.auto_apply)
         self.storage.add_artifact(task_id, "code_summary", code.model_dump_json(indent=2))
         self.storage.add_event(
-            task_id, f"Coder 生成了 {len(code.changes)} 个文件变更", stage=Stage.CODER,
+            task_id,
+            f"Coder 生成了 {len(code.changes)} 个文件变更",
+            stage=Stage.CODER,
             data={"files": written},
         )
         self._check_cancelled(task_id)
@@ -333,7 +347,9 @@ class WorkflowEngine:
         if task.auto_commit and accepted and not task.sync_to_source:
             commit_hash = repository.commit(review.mr_title)
             self.storage.add_artifact(task_id, "commit", commit_hash)
-            self.storage.add_event(task_id, f"已创建 Commit：{commit_hash[:12]}", stage=Stage.DELIVERY)
+            self.storage.add_event(
+                task_id, f"已创建 Commit：{commit_hash[:12]}", stage=Stage.DELIVERY
+            )
         self.storage.update_task(
             task_id, status=TaskStatus.WAITING_APPROVAL, stage=Stage.DELIVERY, progress=100
         )
@@ -440,9 +456,8 @@ class WorkflowEngine:
             )
             hygiene_findings = repository.hygiene_findings()
             if hygiene_findings:
-                validation += (
-                    "\n\n$ deterministic repository hygiene check\nexit=1\n"
-                    + "\n".join(hygiene_findings)
+                validation += "\n\n$ deterministic repository hygiene check\nexit=1\n" + "\n".join(
+                    hygiene_findings
                 )
             else:
                 validation += "\n\n$ deterministic repository hygiene check\nexit=0"
@@ -479,9 +494,7 @@ class WorkflowEngine:
                 f"Product Manager 正在执行第 {iteration + 1} 轮交付验收",
                 "acceptance",
             )
-            acceptance = self.agents.accept(
-                product_spec, diff, validation, review, task.model
-            )
+            acceptance = self.agents.accept(product_spec, diff, validation, review, task.model)
             accepted = (
                 acceptance.accepted
                 and acceptance.score >= self.settings.product_quality_threshold
@@ -491,9 +504,7 @@ class WorkflowEngine:
                 and not hygiene_findings
                 and review.verdict.lower() in {"approved", "approve", "pass", "passed"}
             )
-            self.storage.add_artifact(
-                task.id, "acceptance", acceptance.model_dump_json(indent=2)
-            )
+            self.storage.add_artifact(task.id, "acceptance", acceptance.model_dump_json(indent=2))
             self.storage.add_event(
                 task.id,
                 f"产品验收第 {iteration + 1} 轮：{acceptance.score}/100",
@@ -538,9 +549,7 @@ class WorkflowEngine:
                 failure="Product acceptance corrections:\n" + "\n".join(corrections),
             )
             written = self._apply_code(repository, fix, task.auto_apply)
-            self.storage.add_artifact(
-                task.id, "code_summary", fix.model_dump_json(indent=2)
-            )
+            self.storage.add_artifact(task.id, "code_summary", fix.model_dump_json(indent=2))
             self.storage.add_event(
                 task.id,
                 f"纠偏 Agent 更新了 {len(written)} 个文件",
@@ -626,26 +635,30 @@ class WorkflowEngine:
                 plan.likely_paths, requirement, self.settings.max_context_chars
             )
             fix = self.agents.code(
-                requirement, plan, design, refreshed or context, task.model,
+                requirement,
+                plan,
+                design,
+                refreshed or context,
+                task.model,
                 failure=f"Command: {command}\n{result.combined}",
             )
             written = self._apply_code(repository, fix, task.auto_apply)
             self.storage.add_event(
-                task.id, f"Fix agent updated {len(written)} files", stage=stage,
+                task.id,
+                f"Fix agent updated {len(written)} files",
+                stage=stage,
                 data={"files": written},
             )
         raise AssertionError("unreachable")
 
     @staticmethod
-    def _apply_code(repository: Repository, code: object, auto_apply: bool) -> list[str]:
-        changes = getattr(code, "changes")
+    def _apply_code(repository: Repository, code: CodeOutput, auto_apply: bool) -> list[str]:
+        changes = code.changes
         if not auto_apply:
             return [change.path for change in changes]
         return repository.write_changes([(change.path, change.content) for change in changes])
 
-    def _enter(
-        self, task_id: str, stage: Stage, message: str, role: str | None = None
-    ) -> None:
+    def _enter(self, task_id: str, stage: Stage, message: str, role: str | None = None) -> None:
         self._check_cancelled(task_id)
         self.storage.update_task(
             task_id, status=TaskStatus.RUNNING, stage=stage, progress=STAGE_PROGRESS[stage]

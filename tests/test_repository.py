@@ -19,7 +19,9 @@ def repo(tmp_path: Path) -> Path:
     git(path, "config", "user.email", "test@example.com")
     git(path, "config", "user.name", "Test User")
     (path / "app.py").write_text("def greet():\n    return 'hello'\n", encoding="utf-8")
-    (path / "pyproject.toml").write_text("[project]\nname='fixture'\nversion='0.1'\n", encoding="utf-8")
+    (path / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\nversion='0.1'\n", encoding="utf-8"
+    )
     git(path, "add", ".")
     git(path, "commit", "-m", "initial")
     return path
@@ -59,11 +61,13 @@ def test_local_changes_become_an_isolated_clean_baseline(repo: Path, tmp_path: P
     assert source.status() == original_status
     assert git(repo, "diff", "--cached") == original_staged_diff
 
-    worktree.write_changes([
-        ("app.py", working + "\ndef ai_result():\n    return 'done'\n"),
-        ("helper.py", "VALUE = 'AI completed'\n"),
-        ("result.py", "print('AI result')\n"),
-    ])
+    worktree.write_changes(
+        [
+            ("app.py", working + "\ndef ai_result():\n    return 'done'\n"),
+            ("helper.py", "VALUE = 'AI completed'\n"),
+            ("result.py", "print('AI result')\n"),
+        ]
+    )
     assert worktree.delivery_files() == ["app.py", "helper.py", "result.py"]
 
     source.apply_patch(worktree.diff(), git(repo, "rev-parse", "HEAD"))
@@ -98,18 +102,14 @@ def test_local_snapshot_rejects_oversized_untracked_files(repo: Path, tmp_path: 
         source.copy_local_changes_to(worktree, 5)
 
 
-def test_local_snapshot_rejects_a_different_existing_branch(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_local_snapshot_rejects_a_different_existing_branch(repo: Path, tmp_path: Path) -> None:
     git(repo, "branch", "feature/old")
     (repo / "README.md").write_text("new base\n", encoding="utf-8")
     git(repo, "add", "README.md")
     git(repo, "commit", "-m", "advance main")
     (repo / "app.py").write_text("print('local')\n", encoding="utf-8")
     source = Repository(repo, [tmp_path])
-    worktree = source.create_worktree(
-        tmp_path / "old-branch-worktree", "feature/old"
-    )
+    worktree = source.create_worktree(tmp_path / "old-branch-worktree", "feature/old")
 
     with pytest.raises(RepositoryError, match="source repository HEAD"):
         source.copy_local_changes_to(worktree, 1_000_000)
@@ -150,9 +150,7 @@ def test_empty_repository_can_snapshot_local_source_files(tmp_path: Path) -> Non
     (source_path / "partial.py").write_text("VALUE = 'draft'\n", encoding="utf-8")
     source = Repository(source_path, [tmp_path])
 
-    worktree = source.create_worktree(
-        tmp_path / "empty-local-worktree", "autoflow/continue-draft"
-    )
+    worktree = source.create_worktree(tmp_path / "empty-local-worktree", "autoflow/continue-draft")
     snapshot = source.copy_local_changes_to(worktree, 1_000_000)
 
     assert snapshot.files == ["partial.py"]
@@ -162,9 +160,7 @@ def test_empty_repository_can_snapshot_local_source_files(tmp_path: Path) -> Non
     assert source.status().strip() == "?? partial.py"
 
 
-def test_hygiene_findings_require_generated_files_to_be_ignored(
-    repo: Path, tmp_path: Path
-) -> None:
+def test_hygiene_findings_require_generated_files_to_be_ignored(repo: Path, tmp_path: Path) -> None:
     repository = Repository(repo, [tmp_path])
     cache = repo / "__pycache__"
     cache.mkdir()

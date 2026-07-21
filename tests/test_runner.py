@@ -47,9 +47,7 @@ def test_protocol_client_queues_messages_until_handshake_is_ready(
     assert websocket.messages == [queued]
 
 
-def test_runner_executes_leased_task_and_reports_workflow(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_runner_executes_leased_task_and_reports_workflow(tmp_path: Path, monkeypatch) -> None:
     server_db = tmp_path / "server.db"
     token = "runner-integration-token"
     monkeypatch.setenv("AUTOFLOW_DATABASE_PATH", str(server_db))
@@ -61,15 +59,9 @@ def test_runner_executes_leased_task_and_reports_workflow(
 
     repository = tmp_path / "local-repo"
     repository.mkdir()
-    subprocess.run(
-        ["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "test@example.com"], cwd=repository, check=True
-    )
-    subprocess.run(
-        ["git", "config", "user.name", "Test User"], cwd=repository, check=True
-    )
+    subprocess.run(["git", "init", "-b", "main"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repository, check=True)
     (repository / "README.md").write_text("local fixture\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repository, check=True)
     subprocess.run(

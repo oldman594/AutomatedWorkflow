@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -28,12 +30,20 @@ class Storage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as db:
@@ -110,25 +120,15 @@ class Storage:
                 db.execute("ALTER TABLE tasks ADD COLUMN runner_id TEXT")
             if "include_local_changes" not in columns:
                 db.execute(
-                    "ALTER TABLE tasks ADD COLUMN include_local_changes "
-                    "INTEGER NOT NULL DEFAULT 0"
+                    "ALTER TABLE tasks ADD COLUMN include_local_changes INTEGER NOT NULL DEFAULT 0"
                 )
             if "sync_to_source" not in columns:
-                db.execute(
-                    "ALTER TABLE tasks ADD COLUMN sync_to_source "
-                    "INTEGER NOT NULL DEFAULT 0"
-                )
-            runner_columns = {
-                row["name"] for row in db.execute("PRAGMA table_info(runners)")
-            }
+                db.execute("ALTER TABLE tasks ADD COLUMN sync_to_source INTEGER NOT NULL DEFAULT 0")
+            runner_columns = {row["name"] for row in db.execute("PRAGMA table_info(runners)")}
             if "status" not in runner_columns:
-                db.execute(
-                    "ALTER TABLE runners ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'"
-                )
+                db.execute("ALTER TABLE runners ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
             if "metrics" not in runner_columns:
-                db.execute(
-                    "ALTER TABLE runners ADD COLUMN metrics TEXT NOT NULL DEFAULT '{}'"
-                )
+                db.execute("ALTER TABLE runners ADD COLUMN metrics TEXT NOT NULL DEFAULT '{}'")
 
     def create_task(self, request: TaskCreate, default_model: str) -> Task:
         task_id = uuid.uuid4().hex[:12]
@@ -239,16 +239,12 @@ class Storage:
             values.append(json.dumps(metrics))
         values.append(runner_id)
         with self._lock, self._connect() as db:
-            result = db.execute(
-                f"UPDATE runners SET {', '.join(assignments)} WHERE id = ?", values
-            )
+            result = db.execute(f"UPDATE runners SET {', '.join(assignments)} WHERE id = ?", values)
             if result.rowcount == 0:
                 raise KeyError(runner_id)
         return self.get_runner(runner_id)
 
-    def update_runner_capabilities(
-        self, runner_id: str, capabilities: list[str]
-    ) -> RunnerInfo:
+    def update_runner_capabilities(self, runner_id: str, capabilities: list[str]) -> RunnerInfo:
         with self._lock, self._connect() as db:
             result = db.execute(
                 "UPDATE runners SET capabilities = ?, last_seen = ? WHERE id = ?",
@@ -347,9 +343,7 @@ class Storage:
             ).fetchone()
         return int(row["seq"]) + 1
 
-    def record_runner_message(
-        self, envelope: MessageEnvelope, direction: str
-    ) -> bool:
+    def record_runner_message(self, envelope: MessageEnvelope, direction: str) -> bool:
         if not envelope.runner_id:
             raise ValueError("Runner message is missing runnerId")
         stored = envelope
@@ -388,9 +382,7 @@ class Storage:
         return [MessageEnvelope.model_validate_json(row["envelope"]) for row in rows]
 
     def update_task(self, task_id: str, **fields: Any) -> Task:
-        allowed = {
-            "status", "stage", "progress", "error", "cancel_requested", "branch"
-        }
+        allowed = {"status", "stage", "progress", "error", "cancel_requested", "branch"}
         invalid = set(fields) - allowed
         if invalid:
             raise ValueError(f"Unsupported fields: {sorted(invalid)}")
@@ -398,9 +390,7 @@ class Storage:
         assignments = ", ".join(f"{key} = ?" for key in fields)
         values = [self._db_value(value) for value in fields.values()]
         with self._lock, self._connect() as db:
-            result = db.execute(
-                f"UPDATE tasks SET {assignments} WHERE id = ?", values + [task_id]
-            )
+            result = db.execute(f"UPDATE tasks SET {assignments} WHERE id = ?", values + [task_id])
             if result.rowcount == 0:
                 raise KeyError(task_id)
         return self.get_task(task_id)
@@ -422,6 +412,8 @@ class Storage:
                 (task_id, stage, level, message, json.dumps(data or {}), now),
             )
             event_id = cursor.lastrowid
+            if event_id is None:
+                raise RuntimeError("SQLite did not return an event id")
         return Event(
             id=event_id,
             task_id=task_id,
@@ -459,6 +451,8 @@ class Storage:
                 (task_id, kind, content, now),
             )
             artifact_id = cursor.lastrowid
+            if artifact_id is None:
+                raise RuntimeError("SQLite did not return an artifact id")
         return Artifact(
             id=artifact_id,
             task_id=task_id,

@@ -89,9 +89,7 @@ def test_reader_can_route_to_doubao_independently(tmp_path: Path) -> None:
     def fake_create(**kwargs):
         captured.update(kwargs)
         content = '{"summary":"read","relevant_files":[],"symbols":[],"dependencies":[],"conventions":[],"risks":[]}'
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-        )
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
     settings = Settings(
         provider="deepseek",
@@ -121,9 +119,7 @@ def test_coder_can_route_to_qwen_independently(tmp_path: Path) -> None:
     def fake_create(**kwargs):
         captured.update(kwargs)
         content = '{"summary":"coded","changes":[],"notes":[]}'
-        return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-        )
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
     settings = Settings(
         provider="deepseek",
