@@ -8,6 +8,7 @@ from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ProviderName = Literal["openai", "deepseek", "doubao", "qwen", "codex_cli"]
+SandboxMode = Literal["docker", "host"]
 AGENT_ROLES = ("product", "reader", "planner", "architecture", "coder", "reviewer", "acceptance")
 
 
@@ -45,6 +46,12 @@ class Settings(BaseSettings):
     max_context_chars: int = 80_000
     max_download_bytes: int = 100 * 1024 * 1024
     command_timeout_seconds: int = 900
+    sandbox_mode: SandboxMode = "docker"
+    sandbox_image: str = "autoflow-sandbox:latest"
+    sandbox_network: str = "none"
+    sandbox_memory: str = "4g"
+    sandbox_cpus: float = 4.0
+    sandbox_pids_limit: int = 512
     runner_token: str | None = None
     runner_offline_seconds: int = 30
     mock_llm: bool = False

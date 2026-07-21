@@ -21,6 +21,7 @@ from app.models import (
     TaskStatus,
 )
 from app.repository import CommandResult, Repository, RepositoryError
+from app.sandbox import create_shell_executor
 from app.storage import Storage
 
 STAGE_PROGRESS = {
@@ -46,6 +47,7 @@ class WorkflowEngine:
         self.settings = settings
         self.storage = storage
         self.agents = AgentClient(settings)
+        self.shell_executor = create_shell_executor(settings)
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="autoflow")
         self._active: set[str] = set()
         self._lock = Lock()
@@ -617,7 +619,12 @@ class WorkflowEngine:
         stage = Stage.BUILD if kind == "build" else Stage.TEST
         for attempt in range(self.settings.max_fix_attempts + 1):
             self._check_cancelled(task.id)
-            result = repository.run_shell(command, self.settings.command_timeout_seconds)
+            result = repository.run_shell(
+                command,
+                self.settings.command_timeout_seconds,
+                executor=self.shell_executor,
+                task_id=task.id,
+            )
             self.storage.add_event(
                 task.id,
                 f"{kind.title()} attempt {attempt + 1} {'passed' if result.returncode == 0 else 'failed'}",

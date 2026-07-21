@@ -1,4 +1,11 @@
 services:
+  sandbox-image:
+    build:
+      context: ./sandbox
+    image: autoflow-sandbox:latest
+    profiles: [tools]
+    command: ["true"]
+
   autoflow:
     build: .
     ports:
@@ -8,6 +15,8 @@ services:
       AUTOFLOW_RUNNER_TOKEN: ${AUTOFLOW_RUNNER_TOKEN:-}
       AUTOFLOW_ALLOWED_ROOTS: /workspace
       AUTOFLOW_DATABASE_PATH: /data/autoflow.db
+      AUTOFLOW_SANDBOX_MODE: ${AUTOFLOW_SANDBOX_MODE:-docker}
+      AUTOFLOW_SANDBOX_IMAGE: ${AUTOFLOW_SANDBOX_IMAGE:-autoflow-sandbox:latest}
     volumes:
       - ./data:/data
       - ./worktrees:/opt/autoflow/worktrees

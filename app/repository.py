@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 IGNORED_PARTS = {
     ".git",
@@ -78,6 +79,10 @@ class CommandResult:
     @property
     def combined(self) -> str:
         return (self.stdout + "\n" + self.stderr).strip()
+
+
+class ShellExecutor(Protocol):
+    def run(self, command: str, cwd: Path, timeout: int, task_id: str | None) -> CommandResult: ...
 
 
 @dataclass(slots=True)
@@ -456,8 +461,17 @@ class Repository:
             return "make -j", "make test"
         return None, None
 
-    def run_shell(self, command: str, timeout: int) -> CommandResult:
+    def run_shell(
+        self,
+        command: str,
+        timeout: int,
+        *,
+        executor: ShellExecutor | None = None,
+        task_id: str | None = None,
+    ) -> CommandResult:
         self._validate_shell_command(command)
+        if executor is not None:
+            return executor.run(command, self.path, timeout, task_id)
         completed = subprocess.run(
             command,
             cwd=self.path,

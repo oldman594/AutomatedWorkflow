@@ -42,7 +42,25 @@ Runner 注册上线后，新建任务的“执行节点”中会出现该电脑�
 
 Runner 协议使用统一 JSON Envelope：`id / type / timestamp / seq / runnerId / taskId / payload`。客户端持久化递增序号、最后处理的 Server 序号和未 ACK 消息；断线后发送 `Reconnect` 并重放未同步消息。支持 `Register`、`Heartbeat`、`Capability`、`TaskAssign`、`TaskProgress`、`TaskLog`、`TerminalOutput`、`AIChunk`、`FileChanged`、`PermissionRequest`、`CancelTask` 和任务终态等消息。
 
-开发环境可以使用 `http://127.0.0.1:8765`；不要通过公网 HTTP 发送 Runner Token。V1 使用共享 Runner Token 和主机命令安全策略，能够上报 Docker 能力，但尚未把构建命令强制放入容器沙箱。
+开发环境可以使用 `http://127.0.0.1:8765`；不要通过公网 HTTP 发送 Runner Token。
+
+## 任务沙箱
+
+构建、测试和功能运行默认在一次性 Docker 容器中执行。先在每台执行任务的 Server 或 Local Runner 主机上构建基础镜像：
+
+```bash
+docker build -t autoflow-sandbox:latest sandbox/
+```
+
+沙箱只把当前任务 worktree 以读写方式挂载到 `/workspace`，容器根文件系统只读，默认禁用网络，并启用非 root 用户、`no-new-privileges`、能力删除、CPU、内存和 PID 限制。容器在命令完成后自动删除，超时后会被强制清理。
+
+只有完全可信的本地开发环境才能显式关闭容器隔离：
+
+```dotenv
+AUTOFLOW_SANDBOX_MODE=host
+```
+
+`host` 模式会直接继承 Runner 进程的本机权限和环境，不能用于外部用户任务。需要下载依赖的任务应使用预装依赖的自定义镜像；不要直接为所有任务开放网络。
 
 ## 快速启动
 
@@ -164,6 +182,12 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_PRODUCT_QUALITY_THRESHOLD` | `85` | 需求和验收通过分数 |
 | `AUTOFLOW_MAX_CONTEXT_CHARS` | `80000` | 单阶段代码上下文字符上限 |
 | `AUTOFLOW_MAX_DOWNLOAD_BYTES` | `104857600` | 交付 ZIP 内文件总大小上限 |
+| `AUTOFLOW_SANDBOX_MODE` | `docker` | 命令执行模式：生产使用 `docker`，可信开发可显式使用 `host` |
+| `AUTOFLOW_SANDBOX_IMAGE` | `autoflow-sandbox:latest` | 每任务执行镜像 |
+| `AUTOFLOW_SANDBOX_NETWORK` | `none` | Docker 网络模式 |
+| `AUTOFLOW_SANDBOX_MEMORY` | `4g` | 单命令容器内存上限 |
+| `AUTOFLOW_SANDBOX_CPUS` | `4` | 单命令容器 CPU 上限 |
+| `AUTOFLOW_SANDBOX_PIDS_LIMIT` | `512` | 单命令容器进程数上限 |
 | `AUTOFLOW_MOCK_LLM` | `false` | 使用确定性 Mock Agent |
 
 ## API
