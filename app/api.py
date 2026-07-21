@@ -3,28 +3,50 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import secrets
 import zipfile
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
 
+from app.auth import (
+    PASSWORD_HASH,
+    SESSION_COOKIE,
+    RunnerPrincipal,
+    authenticate_runner,
+    authenticate_user,
+    create_user_session,
+    current_user,
+    hash_token,
+    new_runner_token,
+    require_project_role,
+    visible_project_ids,
+)
 from app.config import Settings, get_settings
 from app.gateway import run_runner_websocket
 from app.models import (
     ApprovalRequest,
     DeliveryOutput,
+    LoginRequest,
+    ProjectAccess,
+    ProjectCreate,
+    ProjectMember,
+    ProjectMemberCreate,
+    ProjectRole,
     RunnerArtifactCreate,
     RunnerEventCreate,
     RunnerInfo,
     RunnerLease,
     RunnerRegistration,
     RunnerTaskUpdate,
+    RunnerTokenCreate,
+    RunnerTokenIssued,
     Task,
     TaskCreate,
     TaskDetail,
     TaskStatus,
+    User,
+    UserCreate,
 )
 from app.repository import Repository, RepositoryError
 from app.storage import Storage
@@ -43,13 +65,22 @@ def get_engine(request: Request) -> WorkflowEngine:
 
 def require_runner_token(
     authorization: str | None = Header(default=None),
+    runner_id_header: str | None = Header(default=None, alias="X-Runner-ID"),
+    storage: Storage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
-) -> None:
-    if not settings.runner_token:
-        raise HTTPException(status_code=503, detail="Local Runner is not configured")
+) -> RunnerPrincipal:
+    if not runner_id_header:
+        raise HTTPException(status_code=401, detail="X-Runner-ID is required")
     scheme, _, token = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not secrets.compare_digest(token, settings.runner_token):
+    if scheme.lower() != "bearer" or not token:
         raise HTTPException(status_code=401, detail="Invalid runner token")
+    project_id = authenticate_runner(storage, settings, runner_id_header, token)
+    return RunnerPrincipal(runner_id_header, project_id)
+
+
+def require_matching_runner(principal: RunnerPrincipal, runner_id: str) -> None:
+    if principal.runner_id != runner_id:
+        raise HTTPException(status_code=404, detail="Runner not found")
 
 
 def runner_is_online(runner: RunnerInfo, settings: Settings) -> RunnerInfo:
@@ -65,6 +96,23 @@ def get_runner_task(storage: Storage, runner_id: str, task_id: str) -> Task:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     if task.runner_id != runner_id:
         raise HTTPException(status_code=404, detail="Task not assigned to this runner")
+    return task
+
+
+def authorize_task(
+    storage: Storage,
+    settings: Settings,
+    user: User,
+    task_id: str,
+    minimum: ProjectRole,
+) -> Task:
+    try:
+        task = storage.get_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    require_project_role(
+        storage, user, task.project_id, minimum, auth_enabled=settings.auth_enabled
+    )
     return task
 
 
@@ -87,6 +135,7 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
         "api_key_configured": bool(settings.openai_api_key),
         "provider_key_configured": not settings.route_errors(),
         "runner_token_configured": bool(settings.runner_token),
+        "auth_enabled": settings.auth_enabled,
         "agent_routes": settings.agent_routes,
         "quality_gate": {
             "threshold": settings.product_quality_threshold,
@@ -96,30 +145,201 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
     }
 
 
+@router.post("/auth/login", response_model=User)
+def login(
+    payload: LoginRequest,
+    response: Response,
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> User:
+    if not settings.auth_enabled:
+        raise HTTPException(status_code=409, detail="Authentication is disabled")
+    user = authenticate_user(storage, payload.email, payload.password)
+    token, expires_at = create_user_session(storage, user, settings)
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        expires=expires_at,
+        httponly=True,
+        secure=settings.auth_cookie_secure,
+        samesite="lax",
+        path="/",
+    )
+    return user
+
+
+@router.post("/auth/logout", status_code=204)
+def logout(
+    request: Request,
+    response: Response,
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        storage.revoke_session(hash_token(token))
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+@router.get("/auth/me", response_model=User)
+def me(user: User = Depends(current_user)) -> User:
+    return user
+
+
+@router.post("/users", response_model=User, status_code=201)
+def create_user(
+    payload: UserCreate,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+) -> User:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    try:
+        return storage.create_user(
+            payload.email,
+            payload.display_name,
+            PASSWORD_HASH.hash(payload.password),
+            is_admin=payload.is_admin,
+        )
+    except Exception as exc:
+        if "UNIQUE constraint failed" in str(exc):
+            raise HTTPException(status_code=409, detail="Email already exists") from exc
+        raise
+
+
+@router.get("/projects", response_model=list[ProjectAccess])
+def list_projects(
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+) -> list[ProjectAccess]:
+    if user.is_admin:
+        projects = storage.list_user_projects(user.id)
+        if projects:
+            return projects
+    return storage.list_user_projects(user.id)
+
+
+@router.post("/projects", response_model=ProjectAccess, status_code=201)
+def create_project(
+    payload: ProjectCreate,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+) -> ProjectAccess:
+    try:
+        return storage.create_project(payload.name, payload.slug, user.id)
+    except Exception as exc:
+        if "UNIQUE constraint failed" in str(exc):
+            raise HTTPException(status_code=409, detail="Project slug already exists") from exc
+        raise
+
+
+@router.get("/projects/{project_id}/members", response_model=list[ProjectMember])
+def list_project_members(
+    project_id: str,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> list[ProjectMember]:
+    require_project_role(
+        storage, user, project_id, ProjectRole.VIEWER, auth_enabled=settings.auth_enabled
+    )
+    return storage.list_project_members(project_id)
+
+
+@router.put("/projects/{project_id}/members", response_model=ProjectMember)
+def put_project_member(
+    project_id: str,
+    payload: ProjectMemberCreate,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> ProjectMember:
+    require_project_role(
+        storage, user, project_id, ProjectRole.OWNER, auth_enabled=settings.auth_enabled
+    )
+    try:
+        member, _ = storage.get_user_by_email(payload.email)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="User not found") from exc
+    return storage.upsert_project_member(project_id, member.id, payload.role)
+
+
+@router.post(
+    "/projects/{project_id}/runner-tokens",
+    response_model=RunnerTokenIssued,
+    status_code=201,
+)
+def issue_runner_token(
+    project_id: str,
+    payload: RunnerTokenCreate,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> RunnerTokenIssued:
+    require_project_role(
+        storage, user, project_id, ProjectRole.OWNER, auth_enabled=settings.auth_enabled
+    )
+    token = new_runner_token()
+    created_at = storage.save_runner_token(
+        payload.runner_id,
+        project_id,
+        payload.label,
+        hash_token(token),
+        user.id,
+    )
+    return RunnerTokenIssued(
+        runner_id=payload.runner_id,
+        project_id=project_id,
+        token=token,
+        created_at=created_at,
+    )
+
+
 @router.get("/tasks")
-def list_tasks(storage: Storage = Depends(get_storage)):
-    return storage.list_tasks()
+def list_tasks(
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+):
+    return storage.list_tasks(project_ids=visible_project_ids(storage, user, settings))
 
 
 @router.get("/runners", response_model=list[RunnerInfo])
 def list_runners(
+    user: User = Depends(current_user),
     storage: Storage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
 ) -> list[RunnerInfo]:
-    return [runner_is_online(item, settings) for item in storage.list_runners()]
+    project_ids = visible_project_ids(storage, user, settings)
+    return [
+        runner_is_online(item, settings) for item in storage.list_runners(project_ids=project_ids)
+    ]
 
 
 @router.post("/tasks", status_code=201)
 def create_task(
     payload: TaskCreate,
+    user: User = Depends(current_user),
     storage: Storage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
 ):
+    if not payload.project_id:
+        projects = storage.list_user_projects(user.id) if settings.auth_enabled else []
+        payload.project_id = projects[0].id if projects else "default"
+    require_project_role(
+        storage,
+        user,
+        payload.project_id,
+        ProjectRole.EDITOR,
+        auth_enabled=settings.auth_enabled,
+    )
     if payload.runner_id:
         try:
-            storage.get_runner(payload.runner_id)
+            runner = storage.get_runner(payload.runner_id)
         except KeyError as exc:
             raise HTTPException(status_code=422, detail="Selected Local Runner not found") from exc
+        if runner.project_id != payload.project_id:
+            raise HTTPException(status_code=422, detail="Runner belongs to another project")
         payload.repository = payload.repository.strip()
     else:
         try:
@@ -133,8 +353,14 @@ def create_task(
 
 
 @router.get("/tasks/{task_id}", response_model=TaskDetail)
-def get_task(task_id: str, storage: Storage = Depends(get_storage)) -> TaskDetail:
+def get_task(
+    task_id: str,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> TaskDetail:
     try:
+        authorize_task(storage, settings, user, task_id, ProjectRole.VIEWER)
         return TaskDetail(
             task=storage.get_task(task_id),
             events=storage.list_events(task_id),
@@ -147,11 +373,12 @@ def get_task(task_id: str, storage: Storage = Depends(get_storage)) -> TaskDetai
 @router.get("/tasks/{task_id}/download")
 def download_task_artifacts(
     task_id: str,
+    user: User = Depends(current_user),
     storage: Storage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
 ) -> Response:
     try:
-        task = storage.get_task(task_id)
+        task = authorize_task(storage, settings, user, task_id, ProjectRole.VIEWER)
         artifacts = storage.list_artifacts(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
@@ -272,8 +499,15 @@ Test: `{delivery.test_command or "Not provided"}`
 
 
 @router.post("/tasks/{task_id}/start")
-def start_task(task_id: str, engine: WorkflowEngine = Depends(get_engine)):
+def start_task(
+    task_id: str,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+    engine: WorkflowEngine = Depends(get_engine),
+):
     try:
+        authorize_task(storage, settings, user, task_id, ProjectRole.EDITOR)
         return engine.start(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
@@ -282,8 +516,15 @@ def start_task(task_id: str, engine: WorkflowEngine = Depends(get_engine)):
 
 
 @router.post("/tasks/{task_id}/cancel")
-def cancel_task(task_id: str, engine: WorkflowEngine = Depends(get_engine)):
+def cancel_task(
+    task_id: str,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+    engine: WorkflowEngine = Depends(get_engine),
+):
     try:
+        authorize_task(storage, settings, user, task_id, ProjectRole.EDITOR)
         return engine.cancel(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
@@ -293,9 +534,13 @@ def cancel_task(task_id: str, engine: WorkflowEngine = Depends(get_engine)):
 def approve_task(
     task_id: str,
     payload: ApprovalRequest,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
     engine: WorkflowEngine = Depends(get_engine),
 ):
     try:
+        authorize_task(storage, settings, user, task_id, ProjectRole.EDITOR)
         return engine.approve(task_id, payload.action)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
@@ -308,10 +553,12 @@ async def stream_events(
     task_id: str,
     request: Request,
     after: int = Query(default=0, ge=0),
+    user: User = Depends(current_user),
     storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
 ):
     try:
-        storage.get_task(task_id)
+        authorize_task(storage, settings, user, task_id, ProjectRole.VIEWER)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
 
@@ -339,26 +586,29 @@ async def stream_events(
 @router.post(
     "/runner/register",
     response_model=RunnerInfo,
-    dependencies=[Depends(require_runner_token)],
 )
 def register_runner(
     payload: RunnerRegistration,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
 ) -> RunnerInfo:
+    require_matching_runner(principal, payload.id)
+    payload = payload.model_copy(update={"project_id": principal.project_id})
     return runner_is_online(storage.upsert_runner(payload), settings)
 
 
 @router.post(
     "/runner/{runner_id}/heartbeat",
     response_model=RunnerInfo,
-    dependencies=[Depends(require_runner_token)],
 )
 def heartbeat_runner(
     runner_id: str,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
     settings: Settings = Depends(get_settings),
 ) -> RunnerInfo:
+    require_matching_runner(principal, runner_id)
     try:
         return runner_is_online(storage.touch_runner(runner_id), settings)
     except KeyError as exc:
@@ -368,12 +618,13 @@ def heartbeat_runner(
 @router.post(
     "/runner/{runner_id}/lease",
     response_model=RunnerLease,
-    dependencies=[Depends(require_runner_token)],
 )
 def lease_runner_task(
     runner_id: str,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
 ) -> RunnerLease:
+    require_matching_runner(principal, runner_id)
     try:
         storage.touch_runner(runner_id)
     except KeyError as exc:
@@ -384,25 +635,27 @@ def lease_runner_task(
 @router.get(
     "/runner/{runner_id}/tasks/{task_id}",
     response_model=Task,
-    dependencies=[Depends(require_runner_token)],
 )
 def get_runner_task_for_execution(
     runner_id: str,
     task_id: str,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
 ) -> Task:
+    require_matching_runner(principal, runner_id)
     return get_runner_task(storage, runner_id, task_id)
 
 
 @router.get(
     "/runner/{runner_id}/tasks/{task_id}/artifacts",
-    dependencies=[Depends(require_runner_token)],
 )
 def get_runner_task_artifacts(
     runner_id: str,
     task_id: str,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
 ):
+    require_matching_runner(principal, runner_id)
     get_runner_task(storage, runner_id, task_id)
     return storage.list_artifacts(task_id)
 
@@ -410,14 +663,15 @@ def get_runner_task_artifacts(
 @router.patch(
     "/runner/{runner_id}/tasks/{task_id}",
     response_model=Task,
-    dependencies=[Depends(require_runner_token)],
 )
 def update_runner_task(
     runner_id: str,
     task_id: str,
     payload: RunnerTaskUpdate,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
 ) -> Task:
+    require_matching_runner(principal, runner_id)
     get_runner_task(storage, runner_id, task_id)
     fields = payload.model_dump(exclude_unset=True)
     if not fields:
@@ -427,14 +681,15 @@ def update_runner_task(
 
 @router.post(
     "/runner/{runner_id}/tasks/{task_id}/events",
-    dependencies=[Depends(require_runner_token)],
 )
 def add_runner_event(
     runner_id: str,
     task_id: str,
     payload: RunnerEventCreate,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
 ):
+    require_matching_runner(principal, runner_id)
     get_runner_task(storage, runner_id, task_id)
     return storage.add_event(
         task_id,
@@ -447,13 +702,14 @@ def add_runner_event(
 
 @router.post(
     "/runner/{runner_id}/tasks/{task_id}/artifacts",
-    dependencies=[Depends(require_runner_token)],
 )
 def add_runner_artifact(
     runner_id: str,
     task_id: str,
     payload: RunnerArtifactCreate,
+    principal: RunnerPrincipal = Depends(require_runner_token),
     storage: Storage = Depends(get_storage),
 ):
+    require_matching_runner(principal, runner_id)
     get_runner_task(storage, runner_id, task_id)
     return storage.add_artifact(task_id, payload.kind, payload.content)

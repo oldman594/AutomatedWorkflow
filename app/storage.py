@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -12,12 +13,17 @@ from typing import Any
 from app.models import (
     Artifact,
     Event,
+    Project,
+    ProjectAccess,
+    ProjectMember,
+    ProjectRole,
     RunnerInfo,
     RunnerRegistration,
     Stage,
     Task,
     TaskCreate,
     TaskStatus,
+    User,
     utc_now,
 )
 from app.protocol import MessageEnvelope
@@ -54,6 +60,7 @@ class Storage:
                     title TEXT NOT NULL,
                     requirement TEXT NOT NULL,
                     repository TEXT NOT NULL,
+                    project_id TEXT NOT NULL DEFAULT 'default',
                     runner_id TEXT,
                     branch TEXT NOT NULL,
                     model TEXT NOT NULL,
@@ -89,6 +96,7 @@ class Storage:
                 );
                 CREATE TABLE IF NOT EXISTS runners (
                     id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL DEFAULT 'default',
                     name TEXT NOT NULL,
                     platform TEXT NOT NULL,
                     roots TEXT NOT NULL DEFAULT '[]',
@@ -109,15 +117,61 @@ class Storage:
                     created_at TEXT NOT NULL,
                     UNIQUE(runner_id, direction, seq)
                 );
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
+                    disabled INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    slug TEXT NOT NULL UNIQUE,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS project_members (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    role TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, user_id)
+                );
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    revoked_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS runner_tokens (
+                    runner_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    label TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_by TEXT NOT NULL REFERENCES users(id),
+                    created_at TEXT NOT NULL,
+                    revoked_at TEXT
+                );
                 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, id);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id, id);
                 CREATE INDEX IF NOT EXISTS idx_runner_messages_replay
                     ON runner_messages(runner_id, direction, seq);
+                CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, expires_at);
+                CREATE INDEX IF NOT EXISTS idx_project_members_user
+                    ON project_members(user_id, project_id);
                 """
             )
             columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
             if "runner_id" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN runner_id TEXT")
+            if "project_id" not in columns:
+                db.execute(
+                    "ALTER TABLE tasks ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"
+                )
             if "include_local_changes" not in columns:
                 db.execute(
                     "ALTER TABLE tasks ADD COLUMN include_local_changes INTEGER NOT NULL DEFAULT 0"
@@ -129,6 +183,15 @@ class Storage:
                 db.execute("ALTER TABLE runners ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'")
             if "metrics" not in runner_columns:
                 db.execute("ALTER TABLE runners ADD COLUMN metrics TEXT NOT NULL DEFAULT '{}'")
+            if "project_id" not in runner_columns:
+                db.execute(
+                    "ALTER TABLE runners ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"
+                )
+            db.execute(
+                """INSERT OR IGNORE INTO projects (id, name, slug, created_by, created_at)
+                VALUES ('default', 'Default Project', 'default', 'system', ?)""",
+                (utc_now(),),
+            )
 
     def create_task(self, request: TaskCreate, default_model: str) -> Task:
         task_id = uuid.uuid4().hex[:12]
@@ -138,6 +201,7 @@ class Storage:
             request.title,
             request.requirement,
             request.repository,
+            request.project_id or "default",
             request.runner_id,
             request.branch,
             request.model or default_model,
@@ -154,11 +218,11 @@ class Storage:
         with self._lock, self._connect() as db:
             db.execute(
                 """INSERT INTO tasks (
-                    id, title, requirement, repository, runner_id, branch, model,
+                    id, title, requirement, repository, project_id, runner_id, branch, model,
                     build_command, test_command, include_local_changes,
                     sync_to_source, auto_apply, auto_commit,
                     status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 values,
             )
         return self.get_task(task_id)
@@ -170,11 +234,21 @@ class Storage:
             raise KeyError(task_id)
         return self._row_to_task(row)
 
-    def list_tasks(self, limit: int = 100) -> list[Task]:
+    def list_tasks(self, limit: int = 100, project_ids: list[str] | None = None) -> list[Task]:
         with self._connect() as db:
-            rows = db.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            if project_ids is None:
+                rows = db.execute(
+                    "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            elif not project_ids:
+                rows = []
+            else:
+                placeholders = ",".join("?" for _ in project_ids)
+                rows = db.execute(
+                    f"""SELECT * FROM tasks WHERE project_id IN ({placeholders})
+                    ORDER BY created_at DESC LIMIT ?""",
+                    [*project_ids, limit],
+                ).fetchall()
         return [self._row_to_task(row) for row in rows]
 
     def recover_interrupted_tasks(self) -> int:
@@ -202,9 +276,10 @@ class Storage:
         with self._lock, self._connect() as db:
             db.execute(
                 """INSERT INTO runners (
-                    id, name, platform, roots, capabilities, last_seen, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    id, project_id, name, platform, roots, capabilities, last_seen, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    project_id = excluded.project_id,
                     name = excluded.name,
                     platform = excluded.platform,
                     roots = excluded.roots,
@@ -212,6 +287,7 @@ class Storage:
                     last_seen = excluded.last_seen""",
                 (
                     registration.id,
+                    registration.project_id,
                     registration.name,
                     registration.platform,
                     json.dumps(registration.roots),
@@ -261,10 +337,216 @@ class Storage:
             raise KeyError(runner_id)
         return self._row_to_runner(row)
 
-    def list_runners(self) -> list[RunnerInfo]:
+    def list_runners(self, project_ids: list[str] | None = None) -> list[RunnerInfo]:
         with self._connect() as db:
-            rows = db.execute("SELECT * FROM runners ORDER BY name, id").fetchall()
+            if project_ids is None:
+                rows = db.execute("SELECT * FROM runners ORDER BY name, id").fetchall()
+            elif not project_ids:
+                rows = []
+            else:
+                placeholders = ",".join("?" for _ in project_ids)
+                rows = db.execute(
+                    f"SELECT * FROM runners WHERE project_id IN ({placeholders}) ORDER BY name, id",
+                    project_ids,
+                ).fetchall()
         return [self._row_to_runner(row) for row in rows]
+
+    def count_users(self) -> int:
+        with self._connect() as db:
+            row = db.execute("SELECT COUNT(*) AS count FROM users").fetchone()
+        return int(row["count"])
+
+    def create_user(
+        self,
+        email: str,
+        display_name: str,
+        password_hash: str,
+        *,
+        is_admin: bool = False,
+    ) -> User:
+        user_id = uuid.uuid4().hex
+        now = utc_now()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO users (
+                    id, email, display_name, password_hash, is_admin, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id,
+                    email.strip().lower(),
+                    display_name.strip(),
+                    password_hash,
+                    int(is_admin),
+                    now,
+                ),
+            )
+        return self.get_user(user_id)
+
+    def get_user(self, user_id: str) -> User:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row is None:
+            raise KeyError(user_id)
+        return self._row_to_user(row)
+
+    def get_user_by_email(self, email: str) -> tuple[User, str]:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM users WHERE email = ?", (email.strip().lower(),)
+            ).fetchone()
+        if row is None:
+            raise KeyError(email)
+        return self._row_to_user(row), str(row["password_hash"])
+
+    def create_session(self, token_hash: str, user_id: str, expires_at: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO sessions (
+                    token_hash, user_id, expires_at, created_at
+                ) VALUES (?, ?, ?, ?)""",
+                (token_hash, user_id, expires_at, utc_now()),
+            )
+
+    def get_session_user(self, token_hash: str, now: str) -> User:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT users.* FROM sessions
+                JOIN users ON users.id = sessions.user_id
+                WHERE sessions.token_hash = ? AND sessions.revoked_at IS NULL
+                  AND sessions.expires_at > ? AND users.disabled = 0""",
+                (token_hash, now),
+            ).fetchone()
+        if row is None:
+            raise KeyError("session")
+        return self._row_to_user(row)
+
+    def revoke_session(self, token_hash: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                "UPDATE sessions SET revoked_at = ? WHERE token_hash = ?",
+                (utc_now(), token_hash),
+            )
+
+    def create_project(self, name: str, slug: str, owner_id: str) -> ProjectAccess:
+        project_id = uuid.uuid4().hex[:12]
+        now = utc_now()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO projects (id, name, slug, created_by, created_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (project_id, name.strip(), slug.strip(), owner_id, now),
+            )
+            db.execute(
+                """INSERT INTO project_members (project_id, user_id, role, created_at)
+                VALUES (?, ?, ?, ?)""",
+                (project_id, owner_id, ProjectRole.OWNER, now),
+            )
+        return ProjectAccess(**self.get_project(project_id).model_dump(), role=ProjectRole.OWNER)
+
+    def get_project(self, project_id: str) -> Project:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is None:
+            raise KeyError(project_id)
+        return Project(**dict(row))
+
+    def list_user_projects(self, user_id: str) -> list[ProjectAccess]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT projects.*, project_members.role FROM project_members
+                JOIN projects ON projects.id = project_members.project_id
+                WHERE project_members.user_id = ? ORDER BY projects.name""",
+                (user_id,),
+            ).fetchall()
+        return [ProjectAccess(**dict(row)) for row in rows]
+
+    def get_project_role(self, project_id: str, user_id: str) -> ProjectRole:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT role FROM project_members
+                WHERE project_id = ? AND user_id = ?""",
+                (project_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(project_id)
+        return ProjectRole(row["role"])
+
+    def upsert_project_member(
+        self, project_id: str, user_id: str, role: ProjectRole
+    ) -> ProjectMember:
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO project_members (project_id, user_id, role, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role""",
+                (project_id, user_id, role, utc_now()),
+            )
+        return next(
+            member for member in self.list_project_members(project_id) if member.user_id == user_id
+        )
+
+    def list_project_members(self, project_id: str) -> list[ProjectMember]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT project_members.project_id, project_members.user_id,
+                    users.email, users.display_name, project_members.role
+                FROM project_members JOIN users ON users.id = project_members.user_id
+                WHERE project_members.project_id = ? ORDER BY users.email""",
+                (project_id,),
+            ).fetchall()
+        return [ProjectMember(**dict(row)) for row in rows]
+
+    def save_runner_token(
+        self,
+        runner_id: str,
+        project_id: str,
+        label: str,
+        token_hash: str,
+        created_by: str,
+    ) -> str:
+        now = utc_now()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO runner_tokens (
+                    runner_id, project_id, label, token_hash, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(runner_id) DO UPDATE SET
+                    project_id = excluded.project_id,
+                    label = excluded.label,
+                    token_hash = excluded.token_hash,
+                    created_by = excluded.created_by,
+                    created_at = excluded.created_at,
+                    revoked_at = NULL""",
+                (runner_id, project_id, label, token_hash, created_by, now),
+            )
+        return now
+
+    def verify_runner_token(self, runner_id: str, token_hash: str) -> str:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT project_id, token_hash FROM runner_tokens
+                WHERE runner_id = ? AND revoked_at IS NULL""",
+                (runner_id,),
+            ).fetchone()
+        if row is None or not secrets.compare_digest(str(row["token_hash"]), token_hash):
+            raise KeyError(runner_id)
+        return str(row["project_id"])
+
+    def has_active_runner_token(self, runner_id: str) -> bool:
+        with self._connect() as db:
+            row = db.execute(
+                """SELECT 1 FROM runner_tokens
+                WHERE runner_id = ? AND revoked_at IS NULL""",
+                (runner_id,),
+            ).fetchone()
+        return row is not None
+
+    def revoke_runner_token(self, runner_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                "UPDATE runner_tokens SET revoked_at = ? WHERE runner_id = ?",
+                (utc_now(), runner_id),
+            )
 
     def lease_runner_task(self, runner_id: str) -> Task | None:
         now = utc_now()
@@ -494,3 +776,11 @@ class Storage:
         data["metrics"] = json.loads(data["metrics"])
         data["online"] = False
         return RunnerInfo(**data)
+
+    @staticmethod
+    def _row_to_user(row: sqlite3.Row) -> User:
+        data = dict(row)
+        data["is_admin"] = bool(data["is_admin"])
+        data["disabled"] = bool(data["disabled"])
+        data.pop("password_hash", None)
+        return User(**data)

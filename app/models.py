@@ -41,6 +41,7 @@ class TaskCreate(BaseModel):
     title: str = Field(min_length=2, max_length=160)
     requirement: str = Field(min_length=5, max_length=30_000)
     repository: str = Field(min_length=1)
+    project_id: str | None = Field(default=None, max_length=100)
     runner_id: str | None = Field(default=None, max_length=100)
     branch: str = Field(default="", max_length=200)
     model: str | None = None
@@ -67,6 +68,7 @@ class Task(BaseModel):
     title: str
     requirement: str
     repository: str
+    project_id: str = "default"
     runner_id: str | None = None
     branch: str
     model: str
@@ -115,6 +117,7 @@ class RunnerRegistration(BaseModel):
     platform: str = Field(min_length=1, max_length=160)
     roots: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
+    project_id: str = "default"
 
 
 class RunnerInfo(RunnerRegistration):
@@ -122,6 +125,73 @@ class RunnerInfo(RunnerRegistration):
     status: str = "unknown"
     metrics: dict[str, Any] = Field(default_factory=dict)
     last_seen: str
+    created_at: str
+
+
+class ProjectRole(StrEnum):
+    OWNER = "owner"
+    EDITOR = "editor"
+    VIEWER = "viewer"
+
+
+class User(BaseModel):
+    id: str
+    email: str
+    display_name: str
+    is_admin: bool = False
+    disabled: bool = False
+    created_at: str
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=1024)
+
+
+class UserCreate(LoginRequest):
+    display_name: str = Field(min_length=1, max_length=160)
+    is_admin: bool = False
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    slug: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9][a-z0-9-]*$")
+
+
+class Project(BaseModel):
+    id: str
+    name: str
+    slug: str
+    created_by: str
+    created_at: str
+
+
+class ProjectAccess(Project):
+    role: ProjectRole
+
+
+class ProjectMemberCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: ProjectRole
+
+
+class ProjectMember(BaseModel):
+    project_id: str
+    user_id: str
+    email: str
+    display_name: str
+    role: ProjectRole
+
+
+class RunnerTokenCreate(BaseModel):
+    runner_id: str = Field(min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
+    label: str = Field(default="Local Runner", min_length=1, max_length=160)
+
+
+class RunnerTokenIssued(BaseModel):
+    runner_id: str
+    project_id: str
+    token: str
     created_at: str
 
 

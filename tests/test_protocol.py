@@ -50,7 +50,10 @@ def register(websocket) -> MessageEnvelope:
 
 def test_websocket_protocol_assigns_and_tracks_task(tmp_path, monkeypatch) -> None:
     configure_server(tmp_path, monkeypatch)
-    headers = {"Authorization": "Bearer protocol-token"}
+    headers = {
+        "Authorization": "Bearer protocol-token",
+        "X-Runner-ID": "ws-runner",
+    }
     with TestClient(app) as client:
         with client.websocket_connect("/api/runner/ws", headers=headers) as websocket:
             registered = register(websocket)
@@ -215,7 +218,10 @@ def test_websocket_protocol_assigns_and_tracks_task(tmp_path, monkeypatch) -> No
 
 def test_reconnect_replays_unacknowledged_server_messages(tmp_path, monkeypatch) -> None:
     configure_server(tmp_path, monkeypatch)
-    headers = {"Authorization": "Bearer protocol-token"}
+    headers = {
+        "Authorization": "Bearer protocol-token",
+        "X-Runner-ID": "ws-runner",
+    }
     with TestClient(app) as client:
         with client.websocket_connect("/api/runner/ws", headers=headers) as websocket:
             register_ack = register(websocket)
@@ -255,7 +261,10 @@ def test_reconnect_replays_unacknowledged_server_messages(tmp_path, monkeypatch)
 
 def test_server_cancels_running_websocket_task(tmp_path, monkeypatch) -> None:
     configure_server(tmp_path, monkeypatch)
-    headers = {"Authorization": "Bearer protocol-token"}
+    headers = {
+        "Authorization": "Bearer protocol-token",
+        "X-Runner-ID": "ws-runner",
+    }
     with TestClient(app) as client:
         with client.websocket_connect("/api/runner/ws", headers=headers) as websocket:
             register(websocket)

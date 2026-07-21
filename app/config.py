@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ProviderName = Literal["openai", "deepseek", "doubao", "qwen", "codex_cli"]
@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     sandbox_pids_limit: int = 512
     runner_token: str | None = None
     runner_offline_seconds: int = 30
+    auth_enabled: bool = True
+    auth_cookie_secure: bool = False
+    auth_session_hours: int = 24
+    bootstrap_admin_email: str | None = None
+    bootstrap_admin_password: SecretStr | None = None
     mock_llm: bool = False
     openai_api_key: str | None = Field(
         default=None,

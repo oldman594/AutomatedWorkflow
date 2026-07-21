@@ -28,6 +28,13 @@ button { cursor: pointer; }
 .hidden { display: none !important; }
 .mono { font-family: "DM Mono", monospace; }
 
+.login-screen { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
+.login-panel { width: min(390px, 100%); padding: 30px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.login-panel h1 { margin: 18px 0 26px; font-size: 22px; letter-spacing: 0; }
+.login-panel label { display: block; margin-bottom: 18px; }
+.login-panel label span { display: block; margin-bottom: 7px; color: #46524c; font-size: 11px; font-weight: 700; }
+.login-panel .form-error { margin: 0 0 16px; }
+
 .app-shell { display: grid; grid-template-columns: 280px minmax(0, 1fr); min-height: 100vh; }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 22px 18px 16px; background: #14211c; color: #edf5f1; border-right: 1px solid #283b33; z-index: 20; }
 .brand { display: flex; gap: 12px; align-items: center; margin-bottom: 26px; padding: 0 3px; }
@@ -51,6 +58,11 @@ button i, .repo-line i, .breadcrumb i, .panel-heading i { width: 16px; height: 1
 .task-nav-head { display: flex; align-items: center; justify-content: space-between; margin: 28px 3px 10px; color: #91a79d; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .task-nav-head .icon-button { width: 30px; height: 30px; }
 .task-list { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -5px; padding: 0 5px; }
+.session-user { display: flex; align-items: center; gap: 8px; padding: 12px 3px; border-top: 1px solid #293a33; }
+.session-user > div { min-width: 0; flex: 1; }
+.session-user strong, .session-user span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-user strong { font-size: 11px; }
+.session-user span { margin-top: 3px; color: #90a49b; font-size: 9px; }
 .task-item { width: 100%; margin-bottom: 5px; padding: 11px 12px; text-align: left; color: #dce8e2; background: transparent; border: 1px solid transparent; }
 .task-item:hover { background: #1c3027; }
 .task-item.active { background: #223b30; border-color: #345345; }

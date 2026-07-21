@@ -16,10 +16,11 @@ Planner 同时生成构建、测试和功能运行命令。工作流会实际运
 
 当 Web 后台与用户代码不在同一台机器时，在用户电脑安装 `autoflow-runner`。后台只保存任务、事件和文本产物；Reader、AI Client、Git、构建、测试以及本地文件同步都在 Runner 所在电脑执行。
 
-服务端生成一个高强度共享令牌并写入 `.env`：
+项目 Owner 在控制台或 API 中为每台 Runner 创建独立令牌。令牌只显示一次，服务端只保存哈希：
 
-```dotenv
-AUTOFLOW_RUNNER_TOKEN=使用密码生成器创建的随机令牌
+```http
+POST /api/projects/{project_id}/runner-tokens
+{"runner_id":"zhang-laptop","label":"Zhang Laptop"}
 ```
 
 生产环境必须通过 HTTPS 暴露后台。然后在用户电脑安装相同版本，并配置 AI Provider Key 和同一个 Runner Token：
@@ -39,6 +40,21 @@ autoflow-runner \
 ```
 
 Runner 注册上线后，新建任务的“执行节点”中会出现该电脑。仓库路径填写用户电脑上的绝对路径；后台通过 WebSocket 长连接下发任务，Runner 将进度、日志、终端输出、文件变更和任务终态实时回传。Runner 只允许访问 `--root` 指定的目录。
+
+旧的全局 `AUTOFLOW_RUNNER_TOKEN` 仅用于迁移兼容。新部署应为每台 Runner 签发独立令牌，泄露时可以只撤销对应 Runner，不影响其他开发电脑。
+
+## 登录与项目权限
+
+首次启动前设置管理员账号；密码使用 Argon2 保存，浏览器使用可撤销的 HttpOnly 会话 Cookie：
+
+```dotenv
+AUTOFLOW_AUTH_ENABLED=true
+AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD=使用密码生成器创建的长密码
+AUTOFLOW_AUTH_COOKIE_SECURE=true
+```
+
+生产环境必须启用 HTTPS 并设置 `AUTOFLOW_AUTH_COOKIE_SECURE=true`。项目角色为 `owner`、`editor`、`viewer`：Owner 管理成员和 Runner Token，Editor 可以创建和操作任务，Viewer 只能查看任务和交付结果。
 
 Runner 协议使用统一 JSON Envelope：`id / type / timestamp / seq / runnerId / taskId / payload`。客户端持久化递增序号、最后处理的 Server 序号和未 ACK 消息；断线后发送 `Reconnect` 并重放未同步消息。支持 `Register`、`Heartbeat`、`Capability`、`TaskAssign`、`TaskProgress`、`TaskLog`、`TerminalOutput`、`AIChunk`、`FileChanged`、`PermissionRequest`、`CancelTask` 和任务终态等消息。
 
@@ -176,6 +192,11 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_DATABASE_PATH` | `./data/autoflow.db` | SQLite 文件 |
 | `AUTOFLOW_RUNNER_TOKEN` | 空 | Local Runner 内部 API 的 Bearer Token |
 | `AUTOFLOW_RUNNER_OFFLINE_SECONDS` | `30` | 超过该心跳间隔后标记 Runner 离线 |
+| `AUTOFLOW_AUTH_ENABLED` | `true` | 启用用户登录和项目权限 |
+| `AUTOFLOW_AUTH_COOKIE_SECURE` | `false` | 生产 HTTPS 环境必须设为 `true` |
+| `AUTOFLOW_AUTH_SESSION_HOURS` | `24` | 登录会话有效期 |
+| `AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL` | 空 | 空数据库首次启动时创建的管理员邮箱 |
+| `AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD` | 空 | 首次管理员密码，至少 8 个字符 |
 | `AUTOFLOW_MAX_FIX_ATTEMPTS` | `3` | 构建/测试自动修复次数 |
 | `AUTOFLOW_MAX_PRODUCT_ITERATIONS` | `3` | 需求规格自动对齐轮数上限 |
 | `AUTOFLOW_MAX_ACCEPTANCE_ITERATIONS` | `2` | 产品验收纠偏轮数上限 |

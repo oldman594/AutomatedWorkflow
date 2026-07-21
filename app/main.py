@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import router
+from app.auth import initialize_identity
 from app.config import get_settings
 from app.storage import Storage
 from app.workflow import WorkflowEngine
@@ -20,6 +21,7 @@ STATIC_DIR = BASE_DIR / "static"
 async def lifespan(app: FastAPI):
     settings = get_settings()
     storage = Storage(settings.database_path)
+    initialize_identity(storage, settings)
     interrupted = storage.recover_interrupted_tasks()
     app.state.storage = storage
     app.state.engine = WorkflowEngine(settings, storage)

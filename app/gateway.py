@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import secrets
 from contextlib import suppress
 from typing import Any
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
+from app.auth import authenticate_runner
 from app.config import Settings
 from app.models import RunnerRegistration, Stage, TaskStatus
 from app.protocol import MessageEnvelope, MessageType
@@ -24,10 +24,19 @@ STEP_STAGES = {
 
 
 class RunnerGatewaySession:
-    def __init__(self, websocket: WebSocket, storage: Storage, settings: Settings) -> None:
+    def __init__(
+        self,
+        websocket: WebSocket,
+        storage: Storage,
+        settings: Settings,
+        expected_runner_id: str,
+        project_id: str,
+    ) -> None:
         self.websocket = websocket
         self.storage = storage
         self.settings = settings
+        self.expected_runner_id = expected_runner_id
+        self.project_id = project_id
         self.runner_id: str | None = None
         self.cancel_sent: set[str] = set()
 
@@ -58,6 +67,9 @@ class RunnerGatewaySession:
         if not runner_id:
             await self.websocket.close(code=1003, reason="runnerId is required")
             raise WebSocketDisconnect(code=1003)
+        if runner_id != self.expected_runner_id:
+            await self.websocket.close(code=1008, reason="runnerId mismatch")
+            raise WebSocketDisconnect(code=1008)
         self.runner_id = runner_id
         registration = RunnerRegistration(
             id=runner_id,
@@ -65,6 +77,7 @@ class RunnerGatewaySession:
             platform=payload.get("platform") or "unknown",
             roots=payload.get("roots") or [],
             capabilities=[],
+            project_id=self.project_id,
         )
         normalized = envelope.model_copy(update={"runner_id": runner_id})
         self.storage.record_runner_message(normalized, "runner")
@@ -82,9 +95,25 @@ class RunnerGatewaySession:
         if not envelope.runner_id:
             await self.websocket.close(code=1003, reason="runnerId is required")
             raise WebSocketDisconnect(code=1003)
+        if envelope.runner_id != self.expected_runner_id:
+            await self.websocket.close(code=1008, reason="runnerId mismatch")
+            raise WebSocketDisconnect(code=1008)
         self.runner_id = envelope.runner_id
         try:
-            self.storage.touch_runner(self.runner_id)
+            runner = self.storage.get_runner(self.runner_id)
+            if runner.project_id != self.project_id:
+                runner = self.storage.upsert_runner(
+                    RunnerRegistration(
+                        id=runner.id,
+                        name=runner.name,
+                        platform=runner.platform,
+                        roots=runner.roots,
+                        capabilities=runner.capabilities,
+                        project_id=self.project_id,
+                    )
+                )
+            else:
+                self.storage.touch_runner(self.runner_id)
         except KeyError as exc:
             await self.websocket.close(code=1008, reason="Runner is not registered")
             raise WebSocketDisconnect(code=1008) from exc
@@ -283,14 +312,20 @@ class RunnerGatewaySession:
 
 async def run_runner_websocket(websocket: WebSocket, storage: Storage, settings: Settings) -> None:
     authorization = websocket.headers.get("authorization", "")
+    runner_id = websocket.headers.get("x-runner-id", "")
     scheme, _, header_token = authorization.partition(" ")
     query_token = websocket.query_params.get("token", "")
     token = header_token if scheme.lower() == "bearer" else query_token
-    if not settings.runner_token or not secrets.compare_digest(token, settings.runner_token):
+    if not runner_id or not token:
+        await websocket.close(code=1008, reason="Invalid runner token")
+        return
+    try:
+        project_id = authenticate_runner(storage, settings, runner_id, token)
+    except HTTPException:
         await websocket.close(code=1008, reason="Invalid runner token")
         return
     await websocket.accept()
     try:
-        await RunnerGatewaySession(websocket, storage, settings).run()
+        await RunnerGatewaySession(websocket, storage, settings, runner_id, project_id).run()
     except (TimeoutError, WebSocketDisconnect):
         return

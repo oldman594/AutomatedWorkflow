@@ -6,6 +6,8 @@ const state = {
   stream: null,
   health: null,
   runners: [],
+  projects: [],
+  user: null,
 };
 
 const stages = [
@@ -40,7 +42,21 @@ async function api(path, options = {}) {
     try { message = formatApiError(await response.json(), message); } catch (_) {}
     throw new Error(message);
   }
+  if (response.status === 204) return null;
   return response.json();
+}
+
+async function loadProjects() {
+  state.projects = state.health?.auth_enabled ? await api("/projects") : [];
+  const select = $("#project-select");
+  select.innerHTML = "";
+  state.projects.forEach((project) => {
+    const option = document.createElement("option");
+    option.value = project.id;
+    option.textContent = project.name;
+    select.appendChild(option);
+  });
+  select.closest("label").classList.toggle("hidden", !state.projects.length);
 }
 
 function formatApiError(payload, fallback) {
@@ -97,7 +113,8 @@ async function loadRunners() {
     const select = $("#runner-select");
     const selected = select.value;
     select.innerHTML = `<option value="">当前服务器</option>`;
-    state.runners.forEach((runner) => {
+    const projectId = $("#project-select").value;
+    state.runners.filter((runner) => !projectId || runner.project_id === projectId).forEach((runner) => {
       const option = document.createElement("option");
       option.value = runner.id;
       option.textContent = `${runner.name} · ${runner.online ? "在线" : "离线"}`;
@@ -321,6 +338,7 @@ async function submitTask(event) {
   const form = event.currentTarget;
   const button = form.querySelector("button[type=submit]");
   const data = Object.fromEntries(new FormData(form));
+  data.project_id = data.project_id || null;
   data.runner_id = data.runner_id || null;
   data.include_local_changes = form.include_local_changes.checked;
   data.sync_to_source = form.sync_to_source.checked;
@@ -367,8 +385,52 @@ function updateRepositoryPlaceholder() {
   $("#repository-input").placeholder = runner?.roots?.[0] || "/home/user/project";
 }
 
+async function initializeApplication() {
+  await loadHealth();
+  if (state.health?.auth_enabled) {
+    try {
+      state.user = await api("/auth/me");
+    } catch (_) {
+      $("#login-screen").classList.remove("hidden");
+      return;
+    }
+  }
+  $("#login-screen").classList.add("hidden");
+  $("#app-shell").classList.remove("hidden");
+  if (state.user) {
+    $("#session-user").classList.remove("hidden");
+    $("#session-name").textContent = state.user.display_name;
+    $("#session-email").textContent = state.user.email;
+  }
+  await loadProjects();
+  await loadRunners();
+  await loadTasks();
+  initIcons();
+}
+
 document.addEventListener("DOMContentLoaded", () => {
-  initIcons(); loadHealth(); loadRunners(); loadTasks();
+  initIcons(); initializeApplication();
+  $("#login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const button = form.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      await api("/auth/login", {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(new FormData(form))),
+      });
+      $("#login-error").classList.add("hidden");
+      await initializeApplication();
+    } catch (error) {
+      $("#login-error").textContent = error.message;
+      $("#login-error").classList.remove("hidden");
+    } finally { button.disabled = false; }
+  });
+  $("#logout-button").addEventListener("click", async () => {
+    await api("/auth/logout", { method: "POST" });
+    window.location.reload();
+  });
   $("#new-task-button").addEventListener("click", openCreate);
   $$('[data-open-create]').forEach((button) => button.addEventListener("click", openCreate));
   $("#close-create").addEventListener("click", closeCreate);
@@ -376,6 +438,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#create-overlay").addEventListener("click", (event) => { if (event.target.id === "create-overlay") closeCreate(); });
   $("#task-form").addEventListener("submit", submitTask);
   $("#runner-select").addEventListener("change", updateRepositoryPlaceholder);
+  $("#project-select").addEventListener("change", loadRunners);
   $("#refresh-button").addEventListener("click", () => loadTasks());
   $("#mobile-menu").addEventListener("click", () => $(".sidebar").classList.toggle("open"));
   $("#artifact-tabs").addEventListener("click", (event) => {

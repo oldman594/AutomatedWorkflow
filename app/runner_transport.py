@@ -205,7 +205,10 @@ class RunnerProtocolClient:
             try:
                 with connect(
                     self.uri,
-                    additional_headers={"Authorization": f"Bearer {self.token}"},
+                    additional_headers={
+                        "Authorization": f"Bearer {self.token}",
+                        "X-Runner-ID": self.registration.id,
+                    },
                     open_timeout=10,
                     ping_interval=20,
                     ping_timeout=20,

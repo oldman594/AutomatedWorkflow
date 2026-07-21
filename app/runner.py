@@ -47,6 +47,7 @@ class RemoteStorage:
         self._path_prefix = "" if client is None else "/api"
         self.client = client or httpx.Client(base_url=server.rstrip("/") + "/api", timeout=30)
         self.client.headers["Authorization"] = f"Bearer {token}"
+        self.client.headers["X-Runner-ID"] = runner_id
         self.message_sender: Callable[[MessageType, str | None, dict | None], object] | None = None
         self.task_cache: dict[str, Task] = {}
         self.artifact_cache: dict[str, list[Artifact]] = {}

@@ -11,7 +11,24 @@
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div class="app-shell">
+  <main id="login-screen" class="login-screen hidden">
+    <form id="login-form" class="login-panel">
+      <div class="brand-mark" aria-hidden="true">AF</div>
+      <h1>登录 AutoFlow</h1>
+      <label>
+        <span>邮箱</span>
+        <input name="email" type="email" autocomplete="username" required>
+      </label>
+      <label>
+        <span>密码</span>
+        <input name="password" type="password" autocomplete="current-password" minlength="8" required>
+      </label>
+      <p id="login-error" class="form-error hidden"></p>
+      <button class="primary full-width" type="submit">登录</button>
+    </form>
+  </main>
+
+  <div id="app-shell" class="app-shell hidden">
     <aside class="sidebar">
       <header class="brand">
         <div class="brand-mark" aria-hidden="true">AF</div>
@@ -33,6 +50,13 @@
         </button>
       </div>
       <nav id="task-list" class="task-list" aria-label="任务列表"></nav>
+
+      <div id="session-user" class="session-user hidden">
+        <div><strong id="session-name"></strong><span id="session-email"></span></div>
+        <button id="logout-button" class="icon-button" type="button" title="退出登录">
+          <i data-lucide="log-out" aria-hidden="true"></i>
+        </button>
+      </div>
 
       <footer class="connection">
         <span id="health-dot" class="health-dot"></span>
@@ -169,6 +193,10 @@
         <label>
           <span>MT 需求</span>
           <textarea name="requirement" required rows="8" placeholder="粘贴完整需求、验收标准和约束"></textarea>
+        </label>
+        <label>
+          <span>项目</span>
+          <select name="project_id" id="project-select"></select>
         </label>
         <label>
           <span>执行节点</span>
