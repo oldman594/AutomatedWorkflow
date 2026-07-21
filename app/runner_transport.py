@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 from websockets.exceptions import ConnectionClosed, WebSocketException
 from websockets.sync.client import ClientConnection, connect
 
+from app import __version__
 from app.models import RunnerRegistration, Task
 from app.protocol import MessageEnvelope, MessageType
 
@@ -259,9 +260,15 @@ class RunnerProtocolClient:
             self.state.acknowledge(int(ack_seq))
         if envelope.type == MessageType.REGISTER_ACK:
             if not envelope.payload.get("accepted"):
+                self._report_release(envelope.payload)
+                print(
+                    f"Runner registration rejected: {envelope.payload.get('reason', 'unknown reason')}",
+                    flush=True,
+                )
                 self.stop_event.set()
                 return
             self.state.mark_registered()
+            self._report_release(envelope.payload)
             self.state.discard_types({MessageType.REGISTER})
             self.heartbeat_seconds = max(
                 2.0, float(envelope.payload.get("heartbeat") or self.heartbeat_seconds)
@@ -271,6 +278,7 @@ class RunnerProtocolClient:
             self.send(MessageType.CAPABILITY, payload=self.capability_payload)
             return
         if envelope.type == MessageType.ACK and envelope.payload.get("reconnected"):
+            self._report_release(envelope.payload)
             self.state.discard_types({MessageType.RECONNECT})
             self.ready.set()
             self._flush_pending()
@@ -286,6 +294,16 @@ class RunnerProtocolClient:
         if envelope.type in {MessageType.CANCEL_TASK, MessageType.PERMISSION_RESULT}:
             self._send_ack(envelope)
 
+    @staticmethod
+    def _report_release(payload: dict) -> None:
+        if payload.get("updateAvailable"):
+            version = payload.get("recommendedVersion")
+            manifest = payload.get("releaseManifestUrl")
+            print(
+                f"Runner update available: {version}; manifest: {manifest or 'not configured'}",
+                flush=True,
+            )
+
     def _send_register(self, websocket: ClientConnection) -> None:
         envelope = self.state.new_envelope(
             MessageType.REGISTER,
@@ -294,7 +312,7 @@ class RunnerProtocolClient:
                 "runnerId": self.registration.id,
                 "hostname": self.registration.name,
                 "platform": self.registration.platform,
-                "version": "1.0.0",
+                "version": __version__,
                 "roots": self.registration.roots,
             },
         )
@@ -308,6 +326,7 @@ class RunnerProtocolClient:
             payload={
                 "lastTask": self.state.last_task,
                 "lastSeq": self.state.last_server_seq,
+                "version": __version__,
             },
         )
         self._send_on(websocket, envelope)

@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -442,6 +443,52 @@ class Repository:
         self.run(["git", "add", "-A"])
         self.run(["git", "commit", "-m", message.strip()[:200]])
         return self.run(["git", "rev-parse", "HEAD"]).stdout.strip()
+
+    def remote_url(self, remote: str = "origin") -> str:
+        result = self.run(["git", "remote", "get-url", remote], check=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RepositoryError(f"Git remote is not configured: {remote}")
+        return result.stdout.strip()
+
+    def push_with_token(
+        self,
+        branch: str,
+        username: str,
+        token: str,
+        remote: str = "origin",
+    ) -> None:
+        if not self._valid_ref(branch):
+            raise RepositoryError("Invalid branch name")
+        with tempfile.TemporaryDirectory(prefix="autoflow-git-") as directory:
+            askpass = Path(directory) / "askpass.sh"
+            askpass.write_text(
+                """#!/bin/sh
+case "$1" in
+  *Username*) printf '%s' "$AUTOFLOW_GIT_USERNAME" ;;
+  *) printf '%s' "$AUTOFLOW_GIT_TOKEN" ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            askpass.chmod(0o700)
+            environment = {
+                **os.environ,
+                "GIT_ASKPASS": str(askpass),
+                "GIT_TERMINAL_PROMPT": "0",
+                "AUTOFLOW_GIT_USERNAME": username,
+                "AUTOFLOW_GIT_TOKEN": token,
+            }
+            completed = subprocess.run(
+                ["git", "push", remote, f"HEAD:refs/heads/{branch}"],
+                cwd=self.path,
+                text=True,
+                capture_output=True,
+                timeout=300,
+                env=environment,
+            )
+        if completed.returncode != 0:
+            detail = (completed.stdout + "\n" + completed.stderr).strip()
+            raise RepositoryError(f"Git push failed: {detail[-4000:]}")
 
     def detect_commands(self) -> tuple[str | None, str | None]:
         if (self.path / "pyproject.toml").exists():

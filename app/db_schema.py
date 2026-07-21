@@ -90,6 +90,7 @@ runners = Table(
     Column("project_id", String(64), nullable=False, server_default=text("'default'")),
     Column("name", String(160), nullable=False),
     Column("platform", String(160), nullable=False),
+    Column("version", String(40), nullable=False, server_default=text("'0.0.0'")),
     Column("roots", Text, nullable=False, server_default=text("'[]'")),
     Column("capabilities", Text, nullable=False, server_default=text("'[]'")),
     Column("status", String(40), nullable=False, server_default=text("'unknown'")),
@@ -169,6 +170,40 @@ jobs = Table(
     Column("updated_at", String(40), nullable=False),
 )
 
+permission_requests = Table(
+    "permission_requests",
+    metadata,
+    Column("id", String(80), primary_key=True),
+    Column("task_id", String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False),
+    Column("runner_id", String(100), nullable=False),
+    Column("operation", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("status", String(20), nullable=False),
+    Column("requested_at", String(40), nullable=False),
+    Column("resolved_by", String(64)),
+    Column("resolved_at", String(40)),
+    Column("result_reason", Text),
+    Column("result_sent_at", String(40)),
+)
+
+git_integrations = Table(
+    "git_integrations",
+    metadata,
+    Column(
+        "project_id",
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("provider", String(20), nullable=False),
+    Column("base_url", Text, nullable=False),
+    Column("repository", String(500), nullable=False),
+    Column("encrypted_token", Text, nullable=False),
+    Column("created_by", String(64), nullable=False),
+    Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False),
+)
+
 Index("idx_events_task", events.c.task_id, events.c.id)
 Index("idx_artifacts_task", artifacts.c.task_id, artifacts.c.id)
 Index(
@@ -180,3 +215,4 @@ Index(
 Index("idx_sessions_user", sessions.c.user_id, sessions.c.expires_at)
 Index("idx_project_members_user", project_members.c.user_id, project_members.c.project_id)
 Index("idx_jobs_claim", jobs.c.target, jobs.c.status, jobs.c.available_at, jobs.c.created_at)
+Index("idx_permissions_runner", permission_requests.c.runner_id, permission_requests.c.status)

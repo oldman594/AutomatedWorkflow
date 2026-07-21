@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "automated-workflow"
-version = "0.1.0"
+version = "1.1.0"
 description = "A human-gated multi-agent software development workflow"
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.14,<2",
+  "cryptography>=44,<47",
   "fastapi>=0.115,<1",
   "httpx>=0.28,<1",
   "opentelemetry-api>=1.30,<2",
@@ -16,6 +17,7 @@ dependencies = [
   "opentelemetry-instrumentation-fastapi>=0.51b0,<1",
   "opentelemetry-sdk>=1.30,<2",
   "openai>=1.68,<3",
+  "packaging>=24,<27",
   "pydantic-settings>=2.7,<3",
   "pwdlib[argon2]>=0.2,<1",
   "psycopg[binary]>=3.2,<4",
@@ -42,7 +44,11 @@ autoflow-runner = "app.runner:main"
 autoflow-maintenance = "app.maintenance:main"
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "migrations*"]
+
+[tool.setuptools.package-data]
+app = ["static/*.css", "static/*.html", "static/*.js"]
+migrations = ["script.py.mako"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -63,7 +69,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501", "B008"]
+ignore = ["E501", "B008", "SIM117"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -40,7 +40,7 @@ def register(websocket) -> MessageEnvelope:
                 "runnerId": "ws-runner",
                 "hostname": "WS Developer Laptop",
                 "platform": "Linux test",
-                "version": "1.0.0",
+                "version": "1.1.0",
                 "roots": ["/home/developer/projects"],
             },
         )
@@ -175,14 +175,25 @@ def test_websocket_protocol_assigns_and_tracks_task(tmp_path, monkeypatch) -> No
                     MessageType.PERMISSION_REQUEST,
                     11,
                     task_id=task_id,
-                    payload={"operation": "git push"},
+                    payload={
+                        "requestId": "permission-1",
+                        "operation": "git push",
+                        "reason": "Publish the reviewed branch",
+                    },
                 )
             )
+            permission_ack = MessageEnvelope.model_validate_json(websocket.receive_text())
+            assert permission_ack.type == MessageType.ACK
+            assert client.get(f"/api/tasks/{task_id}").json()["task"]["status"] == "wait_permission"
+            decision = client.post(
+                "/api/permissions/permission-1/decision",
+                json={"allowed": True, "reason": "Owner approved"},
+            )
+            assert decision.status_code == 200
             permission = MessageEnvelope.model_validate_json(websocket.receive_text())
             assert permission.type == MessageType.PERMISSION_RESULT
-            assert permission.payload["allowed"] is False
-            websocket.receive_text()
-            assert client.get(f"/api/tasks/{task_id}").json()["task"]["status"] == "wait_permission"
+            assert permission.payload["allowed"] is True
+            assert permission.payload["requestId"] == "permission-1"
 
             websocket.send_text(
                 envelope(
@@ -247,6 +258,7 @@ def test_reconnect_replays_unacknowledged_server_messages(tmp_path, monkeypatch)
                     payload={
                         "lastTask": created["id"],
                         "lastSeq": register_ack.seq,
+                        "version": "1.1.0",
                     },
                 )
             )
@@ -300,4 +312,34 @@ def test_server_cancels_running_websocket_task(tmp_path, monkeypatch) -> None:
 
         assert client.get(f"/api/tasks/{task_id}").json()["task"]["status"] == "cancelled"
         assert assigned.type == MessageType.TASK_ASSIGN
+    get_settings.cache_clear()
+
+
+def test_websocket_rejects_runner_below_minimum_version(tmp_path, monkeypatch) -> None:
+    configure_server(tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTOFLOW_RUNNER_MIN_VERSION", "2.0.0")
+    get_settings.cache_clear()
+    headers = {
+        "Authorization": "Bearer protocol-token",
+        "X-Runner-ID": "ws-runner",
+    }
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/runner/ws", headers=headers) as websocket:
+            websocket.send_text(
+                envelope(
+                    MessageType.REGISTER,
+                    1,
+                    payload={
+                        "runnerId": "ws-runner",
+                        "hostname": "Old Runner",
+                        "platform": "Linux",
+                        "version": "1.1.0",
+                        "roots": ["/tmp"],
+                    },
+                )
+            )
+            rejected = MessageEnvelope.model_validate_json(websocket.receive_text())
+            assert rejected.type == MessageType.REGISTER_ACK
+            assert rejected.payload["accepted"] is False
+            assert rejected.payload["minimumVersion"] == "2.0.0"
     get_settings.cache_clear()

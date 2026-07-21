@@ -6,6 +6,7 @@ from contextlib import suppress
 from typing import Any
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
+from packaging.version import InvalidVersion, Version
 
 from app.auth import authenticate_runner
 from app.config import Settings
@@ -73,16 +74,30 @@ class RunnerGatewaySession:
             await self.websocket.close(code=1008, reason="runnerId mismatch")
             raise WebSocketDisconnect(code=1008)
         self.runner_id = runner_id
+        version = str(payload.get("version") or "0.0.0")
+        normalized = envelope.model_copy(update={"runner_id": runner_id})
+        self.storage.record_runner_message(normalized, "runner")
+        if not self._version_supported(version):
+            await self._send(
+                MessageType.REGISTER_ACK,
+                payload={
+                    "accepted": False,
+                    "ackSeq": envelope.seq,
+                    "reason": f"Runner {version} is below minimum {self.settings.runner_min_version}",
+                    **self._release_payload(version),
+                },
+            )
+            await self.websocket.close(code=1008, reason="Runner update required")
+            raise WebSocketDisconnect(code=1008)
         registration = RunnerRegistration(
             id=runner_id,
             name=payload.get("hostname") or payload.get("name") or runner_id,
             platform=payload.get("platform") or "unknown",
+            version=version,
             roots=payload.get("roots") or [],
             capabilities=[],
             project_id=self.project_id,
         )
-        normalized = envelope.model_copy(update={"runner_id": runner_id})
-        self.storage.record_runner_message(normalized, "runner")
         self.storage.upsert_runner(registration)
         await self._send(
             MessageType.REGISTER_ACK,
@@ -90,6 +105,7 @@ class RunnerGatewaySession:
                 "accepted": True,
                 "ackSeq": envelope.seq,
                 "heartbeat": max(2, self.settings.runner_offline_seconds // 3),
+                **self._release_payload(version),
             },
         )
 
@@ -101,6 +117,19 @@ class RunnerGatewaySession:
             await self.websocket.close(code=1008, reason="runnerId mismatch")
             raise WebSocketDisconnect(code=1008)
         self.runner_id = envelope.runner_id
+        version = str(envelope.payload.get("version") or "0.0.0")
+        if not self._version_supported(version):
+            await self._send(
+                MessageType.REGISTER_ACK,
+                payload={
+                    "accepted": False,
+                    "ackSeq": envelope.seq,
+                    "reason": f"Runner {version} is below minimum {self.settings.runner_min_version}",
+                    **self._release_payload(version),
+                },
+            )
+            await self.websocket.close(code=1008, reason="Runner update required")
+            raise WebSocketDisconnect(code=1008)
         try:
             runner = self.storage.get_runner(self.runner_id)
             if runner.project_id != self.project_id:
@@ -109,6 +138,7 @@ class RunnerGatewaySession:
                         id=runner.id,
                         name=runner.name,
                         platform=runner.platform,
+                        version=version,
                         roots=runner.roots,
                         capabilities=runner.capabilities,
                         project_id=self.project_id,
@@ -126,8 +156,31 @@ class RunnerGatewaySession:
         await self._send(
             MessageType.ACK,
             task_id=envelope.task_id,
-            payload={"ackSeq": envelope.seq, "reconnected": True},
+            payload={
+                "ackSeq": envelope.seq,
+                "reconnected": True,
+                **self._release_payload(version),
+            },
         )
+
+    def _version_supported(self, version: str) -> bool:
+        try:
+            return Version(version) >= Version(self.settings.runner_min_version)
+        except InvalidVersion:
+            return False
+
+    def _release_payload(self, version: str) -> dict[str, Any]:
+        try:
+            update_available = Version(version) < Version(self.settings.runner_recommended_version)
+        except InvalidVersion:
+            update_available = True
+        return {
+            "minimumVersion": self.settings.runner_min_version,
+            "recommendedVersion": self.settings.runner_recommended_version,
+            "updateAvailable": update_available,
+            "releaseManifestUrl": self.settings.runner_release_manifest_url,
+            "releasePublicKey": self.settings.runner_release_public_key,
+        }
 
     async def _handle(self, envelope: MessageEnvelope) -> None:
         if not self.runner_id or envelope.runner_id != self.runner_id:
@@ -231,15 +284,20 @@ class RunnerGatewaySession:
                 )
         elif envelope.type == MessageType.PERMISSION_REQUEST:
             self._update_task(envelope.task_id, status=TaskStatus.WAIT_PERMISSION)
-            await self._send(
-                MessageType.PERMISSION_RESULT,
-                task_id=envelope.task_id,
-                payload={
-                    "allowed": False,
-                    "operation": envelope.payload.get("operation"),
-                    "reason": "V1 requires explicit server-side permission integration",
-                },
-            )
+            if envelope.task_id:
+                permission = self.storage.create_permission_request(
+                    str(envelope.payload.get("requestId") or envelope.id),
+                    envelope.task_id,
+                    self.runner_id,
+                    str(envelope.payload.get("operation") or "unknown operation"),
+                    str(envelope.payload.get("reason") or ""),
+                )
+                self.storage.add_event(
+                    envelope.task_id,
+                    f"Runner 请求权限：{permission.operation}",
+                    level="warning",
+                    data={"permission_id": permission.id},
+                )
         elif envelope.type == MessageType.TASK_COMPLETED:
             if not envelope.payload.get("persisted"):
                 self._update_task(
@@ -274,6 +332,18 @@ class RunnerGatewaySession:
         if not self.runner_id:
             return
         self.storage.recover_expired_jobs(f"runner:{self.runner_id}")
+        for permission, reason in self.storage.list_unsent_permission_results(self.runner_id):
+            await self._send(
+                MessageType.PERMISSION_RESULT,
+                task_id=permission.task_id,
+                payload={
+                    "requestId": permission.id,
+                    "allowed": permission.status.value == "approved",
+                    "operation": permission.operation,
+                    "reason": reason,
+                },
+            )
+            self.storage.mark_permission_result_sent(permission.id)
         active = self.storage.get_runner_active_task(self.runner_id)
         if active and active.cancel_requested and active.id not in self.cancel_sent:
             await self._send(MessageType.CANCEL_TASK, task_id=active.id)

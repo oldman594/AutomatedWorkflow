@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str | None = None
     alert_webhook_url: str | None = None
     alert_timeout_seconds: float = 5.0
+    credential_encryption_key: SecretStr | None = None
     sandbox_mode: SandboxMode = "docker"
     sandbox_image: str = "autoflow-sandbox:latest"
     sandbox_network: str = "none"
@@ -69,6 +70,10 @@ class Settings(BaseSettings):
     sandbox_pids_limit: int = 512
     runner_token: str | None = None
     runner_offline_seconds: int = 30
+    runner_min_version: str = "1.1.0"
+    runner_recommended_version: str = "1.1.0"
+    runner_release_manifest_url: str | None = None
+    runner_release_public_key: str | None = None
     auth_enabled: bool = True
     auth_cookie_secure: bool = False
     auth_session_hours: int = 24

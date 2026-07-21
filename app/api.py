@@ -5,6 +5,7 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket
 from fastapi.responses import Response, StreamingResponse
@@ -23,16 +24,25 @@ from app.auth import (
     visible_project_ids,
 )
 from app.config import Settings, get_settings
+from app.credentials import CredentialVault
 from app.gateway import run_runner_websocket
+from app.git_platform import GitPublisher
 from app.models import (
     ApprovalRequest,
     DeliveryOutput,
+    GitIntegrationCreate,
+    GitIntegrationInfo,
+    JobStatus,
     LoginRequest,
+    PermissionDecision,
+    PermissionRequestRecord,
     ProjectAccess,
     ProjectCreate,
     ProjectMember,
     ProjectMemberCreate,
     ProjectRole,
+    PublishRequest,
+    PublishResult,
     RunnerArtifactCreate,
     RunnerEventCreate,
     RunnerInfo,
@@ -295,6 +305,50 @@ def issue_runner_token(
     )
 
 
+@router.put("/projects/{project_id}/git-integration", response_model=GitIntegrationInfo)
+def configure_git_integration(
+    project_id: str,
+    payload: GitIntegrationCreate,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> GitIntegrationInfo:
+    require_project_role(
+        storage, user, project_id, ProjectRole.OWNER, auth_enabled=settings.auth_enabled
+    )
+    if urlsplit(payload.base_url).scheme != "https":
+        raise HTTPException(status_code=422, detail="Git platform base URL must use HTTPS")
+    try:
+        encrypted = CredentialVault(settings).encrypt(payload.token)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return storage.save_git_integration(
+        project_id,
+        payload.provider,
+        payload.base_url,
+        payload.repository,
+        encrypted,
+        user.id,
+    )
+
+
+@router.get("/projects/{project_id}/git-integration", response_model=GitIntegrationInfo)
+def get_git_integration(
+    project_id: str,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> GitIntegrationInfo:
+    require_project_role(
+        storage, user, project_id, ProjectRole.VIEWER, auth_enabled=settings.auth_enabled
+    )
+    try:
+        integration, _ = storage.get_git_integration(project_id)
+        return integration
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Git integration not configured") from exc
+
+
 @router.get("/tasks")
 def list_tasks(
     user: User = Depends(current_user),
@@ -365,9 +419,59 @@ def get_task(
             task=storage.get_task(task_id),
             events=storage.list_events(task_id),
             artifacts=storage.list_artifacts(task_id),
+            permissions=storage.list_permission_requests(task_id),
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
+
+
+@router.get("/tasks/{task_id}/permissions", response_model=list[PermissionRequestRecord])
+def list_task_permissions(
+    task_id: str,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> list[PermissionRequestRecord]:
+    authorize_task(storage, settings, user, task_id, ProjectRole.VIEWER)
+    return storage.list_permission_requests(task_id)
+
+
+@router.post("/permissions/{permission_id}/decision", response_model=PermissionRequestRecord)
+def decide_permission(
+    permission_id: str,
+    payload: PermissionDecision,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> PermissionRequestRecord:
+    try:
+        permission = storage.get_permission_request(permission_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Permission request not found") from exc
+    authorize_task(storage, settings, user, permission.task_id, ProjectRole.OWNER)
+    try:
+        resolved = storage.resolve_permission_request(
+            permission_id, payload.allowed, user.id, payload.reason
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if payload.allowed:
+        storage.update_task(permission.task_id, status=TaskStatus.RUNNING)
+        storage.renew_job(permission.task_id, permission.runner_id, settings.job_lease_seconds)
+    else:
+        storage.update_task(
+            permission.task_id,
+            status=TaskStatus.FAILED,
+            error=f"Permission denied: {permission.operation}",
+        )
+        storage.complete_job(permission.task_id, permission.runner_id, JobStatus.FAILED)
+    storage.add_event(
+        permission.task_id,
+        f"权限请求已{'批准' if payload.allowed else '拒绝'}：{permission.operation}",
+        level="info" if payload.allowed else "warning",
+        data={"permission_id": permission.id, "reason": payload.reason},
+    )
+    return resolved
 
 
 @router.get("/tasks/{task_id}/download")
@@ -437,6 +541,61 @@ def download_task_artifacts(
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/tasks/{task_id}/publish", response_model=PublishResult)
+def publish_task(
+    task_id: str,
+    payload: PublishRequest,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> PublishResult:
+    task = authorize_task(storage, settings, user, task_id, ProjectRole.EDITOR)
+    if task.runner_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Runner task publishing must be performed on the Runner host",
+        )
+    if task.status not in {TaskStatus.WAITING_APPROVAL, TaskStatus.COMPLETED}:
+        raise HTTPException(status_code=409, detail="Task is not ready to publish")
+    artifacts = storage.list_artifacts(task_id)
+    artifact_values = {artifact.kind: artifact.content for artifact in artifacts}
+    if artifact_values.get("merge_request"):
+        return PublishResult.model_validate_json(artifact_values["merge_request"])
+    acceptance = json.loads(artifact_values.get("acceptance") or "{}")
+    if not acceptance.get("accepted"):
+        raise HTTPException(status_code=409, detail="Product acceptance did not pass")
+    worktree = artifact_values.get("worktree")
+    if not worktree:
+        raise HTTPException(status_code=409, detail="Task worktree is unavailable")
+    try:
+        integration, encrypted_token = storage.get_git_integration(task.project_id)
+        token = CredentialVault(settings).decrypt(encrypted_token)
+        repository = Repository(worktree, settings.allowed_roots)
+        review = json.loads(artifact_values.get("review") or "{}")
+        if repository.status().strip():
+            repository.commit(str(review.get("mr_title") or task.title))
+        result = GitPublisher().publish(
+            repository,
+            integration,
+            token,
+            task.branch,
+            payload.base_branch or artifact_values.get("base_branch") or "main",
+            str(review.get("mr_title") or task.title),
+            str(review.get("mr_description") or task.requirement),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=409, detail="Git integration not configured") from exc
+    except (RepositoryError, RuntimeError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    storage.add_artifact(task_id, "merge_request", result.model_dump_json(indent=2))
+    storage.add_event(
+        task_id,
+        f"已创建 {result.provider.value} 合并请求：{result.url}",
+        stage=task.stage,
+    )
+    return result
 
 
 def _delivery_markdown(title: str, delivery: DeliveryOutput) -> str:

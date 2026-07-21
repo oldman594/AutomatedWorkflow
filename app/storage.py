@@ -17,8 +17,12 @@ from app.migrations import upgrade_database
 from app.models import (
     Artifact,
     Event,
+    GitIntegrationInfo,
+    GitProvider,
     Job,
     JobStatus,
+    PermissionRequestRecord,
+    PermissionStatus,
     Project,
     ProjectAccess,
     ProjectMember,
@@ -401,12 +405,14 @@ class Storage:
         with self._lock, self._connect() as db:
             db.execute(
                 """INSERT INTO runners (
-                    id, project_id, name, platform, roots, capabilities, last_seen, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    id, project_id, name, platform, version, roots, capabilities,
+                    last_seen, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     project_id = excluded.project_id,
                     name = excluded.name,
                     platform = excluded.platform,
+                    version = excluded.version,
                     roots = excluded.roots,
                     capabilities = excluded.capabilities,
                     last_seen = excluded.last_seen""",
@@ -415,6 +421,7 @@ class Storage:
                     registration.project_id,
                     registration.name,
                     registration.platform,
+                    registration.version,
                     json.dumps(registration.roots),
                     json.dumps(registration.capabilities),
                     now,
@@ -675,6 +682,55 @@ class Storage:
                 (utc_now(), runner_id),
             )
 
+    def save_git_integration(
+        self,
+        project_id: str,
+        provider: GitProvider,
+        base_url: str,
+        repository: str,
+        encrypted_token: str,
+        created_by: str,
+    ) -> GitIntegrationInfo:
+        now = utc_now()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO git_integrations (
+                    project_id, provider, base_url, repository, encrypted_token,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (project_id) DO UPDATE SET
+                    provider = excluded.provider,
+                    base_url = excluded.base_url,
+                    repository = excluded.repository,
+                    encrypted_token = excluded.encrypted_token,
+                    created_by = excluded.created_by,
+                    updated_at = excluded.updated_at""",
+                (
+                    project_id,
+                    provider,
+                    base_url.rstrip("/"),
+                    repository.strip().removesuffix(".git"),
+                    encrypted_token,
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+        info, _ = self.get_git_integration(project_id)
+        return info
+
+    def get_git_integration(self, project_id: str) -> tuple[GitIntegrationInfo, str]:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM git_integrations WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(project_id)
+        data = dict(row)
+        encrypted_token = str(data.pop("encrypted_token"))
+        data.pop("created_by", None)
+        return GitIntegrationInfo(**data), encrypted_token
+
     def lease_runner_task(self, runner_id: str, lease_seconds: int = 60) -> Task | None:
         job = self.lease_job(f"runner:{runner_id}", runner_id, lease_seconds)
         if job is None:
@@ -766,6 +822,98 @@ class Storage:
             if result.rowcount == 0:
                 raise KeyError(task_id)
         return self.get_task(task_id)
+
+    def create_permission_request(
+        self,
+        request_id: str,
+        task_id: str,
+        runner_id: str,
+        operation: str,
+        reason: str,
+    ) -> PermissionRequestRecord:
+        now = utc_now()
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO permission_requests (
+                    id, task_id, runner_id, operation, reason, status, requested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (id) DO NOTHING""",
+                (
+                    request_id,
+                    task_id,
+                    runner_id,
+                    operation,
+                    reason,
+                    PermissionStatus.PENDING,
+                    now,
+                ),
+            )
+        return self.get_permission_request(request_id)
+
+    def get_permission_request(self, request_id: str) -> PermissionRequestRecord:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM permission_requests WHERE id = ?", (request_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(request_id)
+        return PermissionRequestRecord(**dict(row))
+
+    def list_permission_requests(self, task_id: str) -> list[PermissionRequestRecord]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT * FROM permission_requests
+                WHERE task_id = ? ORDER BY requested_at""",
+                (task_id,),
+            ).fetchall()
+        return [PermissionRequestRecord(**dict(row)) for row in rows]
+
+    def resolve_permission_request(
+        self,
+        request_id: str,
+        allowed: bool,
+        resolved_by: str,
+        reason: str,
+    ) -> PermissionRequestRecord:
+        status = PermissionStatus.APPROVED if allowed else PermissionStatus.DENIED
+        with self._lock, self._connect() as db:
+            result = db.execute(
+                """UPDATE permission_requests SET status = ?, resolved_by = ?,
+                    resolved_at = ?, result_reason = ?, result_sent_at = NULL
+                WHERE id = ? AND status = ?""",
+                (
+                    status,
+                    resolved_by,
+                    utc_now(),
+                    reason,
+                    request_id,
+                    PermissionStatus.PENDING,
+                ),
+            )
+            if result.rowcount == 0:
+                raise ValueError("Permission request is already resolved or missing")
+        return self.get_permission_request(request_id)
+
+    def list_unsent_permission_results(
+        self, runner_id: str
+    ) -> list[tuple[PermissionRequestRecord, str]]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT * FROM permission_requests WHERE runner_id = ?
+                AND status IN (?, ?) AND result_sent_at IS NULL
+                ORDER BY resolved_at""",
+                (runner_id, PermissionStatus.APPROVED, PermissionStatus.DENIED),
+            ).fetchall()
+        return [
+            (PermissionRequestRecord(**dict(row)), str(row["result_reason"] or "")) for row in rows
+        ]
+
+    def mark_permission_result_sent(self, request_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                "UPDATE permission_requests SET result_sent_at = ? WHERE id = ?",
+                (utc_now(), request_id),
+            )
 
     def add_event(
         self,

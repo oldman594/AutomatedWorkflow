@@ -167,10 +167,12 @@ class WorkflowEngine:
             self.storage.add_event(task_id, f"从持久化工作区恢复任务：{existing_worktree}")
         else:
             source_head = source.head_oid()
+            base_branch = source.current_branch() or "main"
             repository = source.create_worktree(worktree_path, branch)
             self.storage.update_task(task_id, branch=branch)
             self.storage.add_artifact(task_id, "worktree", str(worktree_path))
             self.storage.add_artifact(task_id, "source_head", source_head or "")
+            self.storage.add_artifact(task_id, "base_branch", base_branch)
             self.storage.add_event(task_id, f"隔离 worktree 已就绪，分支：{branch}")
         if not existing_worktree and task.sync_to_source and repository.head_oid() != source_head:
             raise RepositoryError(

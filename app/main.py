@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app import __version__
 from app.alerts import AlertDispatcher
 from app.api import router
 from app.auth import initialize_identity
@@ -49,7 +50,7 @@ async def lifespan(app: FastAPI):
         storage.close()
 
 
-app = FastAPI(title="AutoFlow", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="AutoFlow", version=__version__, lifespan=lifespan)
 configure_tracing(app, get_settings())
 app.include_router(router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from app import __version__
 from app.config import Settings
 from app.models import (
     Artifact,
@@ -27,6 +28,7 @@ from app.models import (
 )
 from app.protocol import MessageType
 from app.runner_transport import RunnerProtocolClient, capability_flags
+from app.updater import download_release, fetch_release, update_available
 from app.workflow import WorkflowEngine
 
 
@@ -387,9 +389,29 @@ def main() -> None:
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--heartbeat-seconds", type=float, default=10.0)
     parser.add_argument("--state-file", type=Path, default=None)
+    parser.add_argument("--check-update", action="store_true")
+    parser.add_argument("--download-update", action="store_true")
+    parser.add_argument("--release-manifest-url", default=None)
+    parser.add_argument("--release-public-key", default=None)
+    parser.add_argument("--update-dir", type=Path, default=Path("~/.autoflow/updates"))
     args = parser.parse_args()
 
     settings = Settings()
+    if args.check_update or args.download_update:
+        manifest_url = args.release_manifest_url or settings.runner_release_manifest_url
+        public_key = args.release_public_key or settings.runner_release_public_key
+        if not manifest_url or not public_key:
+            raise SystemExit("Runner release manifest URL and public key are required")
+        release = fetch_release(manifest_url, public_key)
+        available = update_available(release)
+        print(
+            f"Current Runner: {__version__}; signed release: {release.version}; "
+            f"update available: {'yes' if available else 'no'}"
+        )
+        if args.download_update and available:
+            target = download_release(release, args.update_dir)
+            print(f"Verified Runner package downloaded to: {target}")
+        return
     token = args.token or settings.runner_token
     if not token:
         raise SystemExit("AUTOFLOW_RUNNER_TOKEN or --token is required")
@@ -404,6 +426,7 @@ def main() -> None:
         id=args.id,
         name=args.name,
         platform=platform.platform(),
+        version=__version__,
         roots=[str(path) for path in roots],
         capabilities=capabilities(settings),
     )

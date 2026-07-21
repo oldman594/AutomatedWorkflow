@@ -30,7 +30,9 @@ certifi==2026.6.17
     #   httpx
     #   requests
 cffi==2.1.0
-    # via argon2-cffi-bindings
+    # via
+    #   argon2-cffi-bindings
+    #   cryptography
 charset-normalizer==3.4.9
     # via requests
 click==8.4.2
@@ -39,6 +41,8 @@ click==8.4.2
     #   uvicorn
 coverage==7.15.2
     # via pytest-cov
+cryptography==46.0.7
+    # via automated-workflow (pyproject.toml)
 distro==1.9.0
     # via openai
 fastapi==0.139.2
@@ -121,6 +125,7 @@ opentelemetry-util-http==0.65b0
     #   opentelemetry-instrumentation-fastapi
 packaging==26.2
     # via
+    #   automated-workflow (pyproject.toml)
     #   build
     #   opentelemetry-instrumentation
     #   pytest

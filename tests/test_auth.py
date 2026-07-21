@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
@@ -15,6 +16,7 @@ def configure_auth(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("AUTOFLOW_BOOTSTRAP_ADMIN_PASSWORD", "correct-horse-battery")
     monkeypatch.setenv("AUTOFLOW_MOCK_LLM", "true")
+    monkeypatch.setenv("AUTOFLOW_CREDENTIAL_ENCRYPTION_KEY", Fernet.generate_key().decode())
     monkeypatch.delenv("AUTOFLOW_RUNNER_TOKEN", raising=False)
     get_settings.cache_clear()
 
@@ -45,6 +47,21 @@ def test_login_project_rbac_and_per_runner_token(tmp_path: Path, monkeypatch) ->
         project = client.post("/api/projects", json={"name": "Payments", "slug": "payments"}).json()
         project_id = project["id"]
         assert project["role"] == "owner"
+        git_integration = client.put(
+            f"/api/projects/{project_id}/git-integration",
+            json={
+                "provider": "github",
+                "base_url": "https://api.github.com",
+                "repository": "acme/payments",
+                "token": "github-project-token",
+            },
+        )
+        assert git_integration.status_code == 200
+        assert "token" not in git_integration.json()
+        assert (
+            client.get(f"/api/projects/{project_id}/git-integration").json()["repository"]
+            == "acme/payments"
+        )
 
         created_user = client.post(
             "/api/users",

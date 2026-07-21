@@ -23,7 +23,7 @@ POST /api/projects/{project_id}/runner-tokens
 {"runner_id":"zhang-laptop","label":"Zhang Laptop"}
 ```
 
-生产环境必须通过 HTTPS 暴露后台。然后在用户电脑安装相同版本，并配置 AI Provider Key 和同一个 Runner Token：
+生产环境必须通过 HTTPS 暴露后台。然后在用户电脑安装兼容版本，并配置 AI Provider Key 和该 Runner 自己的 Token：
 
 ```bash
 cd /path/to/AutomatedWorkflow
@@ -43,6 +43,15 @@ Runner 注册上线后，新建任务的“执行节点”中会出现该电脑�
 
 旧的全局 `AUTOFLOW_RUNNER_TOKEN` 仅用于迁移兼容。新部署应为每台 Runner 签发独立令牌，泄露时可以只撤销对应 Runner，不影响其他开发电脑。
 
+Server 会拒绝低于 `AUTOFLOW_RUNNER_MIN_VERSION` 的 Runner，并在注册响应中提示推荐版本。Runner 可以检查或下载经过签名的发布包：
+
+```bash
+autoflow-runner --check-update
+autoflow-runner --download-update
+```
+
+更新清单使用 Ed25519 签名，下载包还会校验 SHA-256。下载命令不会静默安装新版本；管理员检查后再替换 Runner。Tag Release 工作流会构建 wheel、生成签名清单并发布到 GitHub Release，生产环境需配置 `RUNNER_RELEASE_PRIVATE_KEY` Secret，并把对应公钥和清单 URL 下发给 Runner。
+
 ## 登录与项目权限
 
 首次启动前设置管理员账号；密码使用 Argon2 保存，浏览器使用可撤销的 HttpOnly 会话 Cookie：
@@ -55,6 +64,24 @@ AUTOFLOW_AUTH_COOKIE_SECURE=true
 ```
 
 生产环境必须启用 HTTPS 并设置 `AUTOFLOW_AUTH_COOKIE_SECURE=true`。项目角色为 `owner`、`editor`、`viewer`：Owner 管理成员和 Runner Token，Editor 可以创建和操作任务，Viewer 只能查看任务和交付结果。
+
+Runner 遇到超出普通执行范围的操作时会发送权限请求并暂停任务。任务详情页向 Owner 显示“批准授权”和“拒绝授权”；决定持久化到数据库，并在 Runner 断线重连后继续下发。拒绝授权会终止对应任务，审批记录会保留用于审计。
+
+## Git 平台集成
+
+项目 Owner 可以配置 GitHub 或 GitLab 集成。生产环境先生成独立的 Fernet 密钥；平台 Token 加密后存入数据库，不会写入任务日志、Git remote 或命令参数：
+
+```bash
+python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+export AUTOFLOW_CREDENTIAL_ENCRYPTION_KEY='生成的密钥'
+```
+
+```http
+PUT /api/projects/{project_id}/git-integration
+{"provider":"github","base_url":"https://api.github.com","repository":"owner/repository","token":"平台访问令牌"}
+```
+
+GitLab 的 `base_url` 使用实例 API 地址，例如 `https://gitlab.example.com/api/v4`。产品验收通过后，Editor 可以在任务详情页创建 Pull Request 或 Merge Request。发布前会校验本地 HTTPS remote 与配置的仓库和平台主机完全匹配；Token 仅通过临时 `GIT_ASKPASS` 传给 Git。当前远程 Runner 任务必须在 Runner 主机侧发布，Server 不会访问用户电脑上的 worktree。
 
 Runner 协议使用统一 JSON Envelope：`id / type / timestamp / seq / runnerId / taskId / payload`。客户端持久化递增序号、最后处理的 Server 序号和未 ACK 消息；断线后发送 `Reconnect` 并重放未同步消息。支持 `Register`、`Heartbeat`、`Capability`、`TaskAssign`、`TaskProgress`、`TaskLog`、`TerminalOutput`、`AIChunk`、`FileChanged`、`PermissionRequest`、`CancelTask` 和任务终态等消息。
 
@@ -214,7 +241,7 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 - Reader 只读取 Planner 指定路径、需求关键词命中项以及根目录工程说明，受 `AUTOFLOW_MAX_CONTEXT_CHARS` 限制。
 - Coder 只能写仓库内的文本路径，无法写 `.git`、构建目录或仓库外文件。
 - 构建/测试命令来自任务输入或工程类型探测；危险命令、网络下载、`git push` 等会被拒绝。
-- 默认不提交代码。任务完成后可在控制台选择“确认完成”或“提交代码”。系统始终不 push、不创建远程 MR。
+- 默认不提交或推送代码。任务完成后可在控制台确认、创建本地 Commit；配置 Git 平台后，验收通过的 Server 本地任务还可由 Editor 显式创建远程 PR/MR。
 - 建议将平台运行在专用开发容器或低权限系统用户中。命令过滤不是容器级安全边界。
 
 ## 配置
@@ -239,8 +266,12 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_ALLOWED_ROOTS` | 用户主目录 | 逗号分隔的仓库白名单根目录 |
 | `AUTOFLOW_DATABASE_PATH` | `./data/autoflow.db` | SQLite 文件 |
 | `AUTOFLOW_DATABASE_URL` | 空 | 生产 PostgreSQL URL；设置后优先于 SQLite 路径 |
-| `AUTOFLOW_RUNNER_TOKEN` | 空 | Local Runner 内部 API 的 Bearer Token |
+| `AUTOFLOW_RUNNER_TOKEN` | 空 | 当前 Local Runner 自己的 Bearer Token；全局共享值仅用于旧部署迁移 |
 | `AUTOFLOW_RUNNER_OFFLINE_SECONDS` | `30` | 超过该心跳间隔后标记 Runner 离线 |
+| `AUTOFLOW_RUNNER_MIN_VERSION` | `1.1.0` | Server 接受的最低 Runner 版本 |
+| `AUTOFLOW_RUNNER_RECOMMENDED_VERSION` | `1.1.0` | Server 向 Runner 提示的推荐版本 |
+| `AUTOFLOW_RUNNER_RELEASE_MANIFEST_URL` | 空 | Ed25519 签名的 Runner 发布清单 URL |
+| `AUTOFLOW_RUNNER_RELEASE_PUBLIC_KEY` | 空 | Base64 编码的 Ed25519 发布公钥 |
 | `AUTOFLOW_AUTH_ENABLED` | `true` | 启用用户登录和项目权限 |
 | `AUTOFLOW_AUTH_COOKIE_SECURE` | `false` | 生产 HTTPS 环境必须设为 `true` |
 | `AUTOFLOW_AUTH_SESSION_HOURS` | `24` | 登录会话有效期 |
@@ -263,6 +294,7 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_OTEL_SERVICE_NAME` | `autoflow` | OpenTelemetry 服务名 |
 | `AUTOFLOW_OTEL_EXPORTER_OTLP_ENDPOINT` | 空 | OTLP HTTP Trace 上报地址 |
 | `AUTOFLOW_ALERT_WEBHOOK_URL` | 空 | 最终失败异步告警地址 |
+| `AUTOFLOW_CREDENTIAL_ENCRYPTION_KEY` | 空 | 加密 Git 平台 Token 的 Fernet 密钥 |
 | `AUTOFLOW_MAX_CONTEXT_CHARS` | `80000` | 单阶段代码上下文字符上限 |
 | `AUTOFLOW_MAX_DOWNLOAD_BYTES` | `104857600` | 交付 ZIP 内文件总大小上限 |
 | `AUTOFLOW_SANDBOX_MODE` | `docker` | 命令执行模式：生产使用 `docker`，可信开发可显式使用 `host` |
@@ -282,8 +314,11 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 - `GET /api/tasks/{id}/events` 订阅 SSE 事件
 - `GET /api/runners` 查看已注册 Runner 及在线状态
 - `WS /api/runner/ws` Local Runner 双向消息通道
+- `PUT /api/projects/{id}/git-integration` 配置 GitHub/GitLab 凭据
+- `POST /api/permissions/{id}/decision` 审批 Runner 权限请求
 - `POST /api/tasks/{id}/cancel` 请求取消
 - `POST /api/tasks/{id}/approve` 人工确认或创建本地 Commit
+- `POST /api/tasks/{id}/publish` 创建 GitHub PR 或 GitLab MR
 
 ## 测试
 
@@ -293,4 +328,4 @@ pytest
 
 ## 后续演进
 
-推荐按实际任务数据逐步加入：人工回答产品阻塞问题、按 Todo 并行 Coding Agent、容器沙箱、GitLab/GitHub OAuth 与 MR API、语言服务器索引、历史任务检索和仓库知识图谱。不要在缺少评测集和权限隔离时直接开放自动 push/merge。
+推荐按实际任务数据逐步加入：人工回答产品阻塞问题、按 Todo 并行 Coding Agent、Git 平台 OAuth、语言服务器索引、历史任务检索和仓库知识图谱。自动 push/merge 仍应保持显式人工门禁，并以真实任务评测集持续验证权限边界和交付质量。

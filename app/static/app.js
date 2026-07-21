@@ -247,6 +247,13 @@ function renderActions(task) {
   if (task.status === "draft") actions.append(actionButton("play", "开始运行", "primary", startCurrent));
   if (task.status === "failed") actions.append(actionButton("rotate-ccw", "重新运行", "primary", startCurrent));
   if (["queued", "assigned", "accepted", "running", "wait_permission"].includes(task.status)) actions.append(actionButton("square", "取消", "secondary danger", cancelCurrent));
+  if (task.status === "wait_permission") {
+    const permission = [...(state.detail.permissions || [])].reverse().find((item) => item.status === "pending");
+    if (permission) {
+      actions.append(actionButton("x", "拒绝授权", "secondary danger", () => decidePermission(permission.id, false)));
+      actions.append(actionButton("shield-check", "批准授权", "primary", () => decidePermission(permission.id, true)));
+    }
+  }
   if (task.status === "waiting_approval") {
     const acceptance = latestJsonArtifact("acceptance");
     actions.append(actionButton("check", acceptance?.accepted === false ? "结束任务" : "确认完成", "secondary", () => approveCurrent("complete")));
@@ -258,6 +265,10 @@ function renderActions(task) {
   const delivery = latestJsonArtifact("delivery");
   if (!task.runner_id && hasWorkspace && delivery?.source_applied !== true && ["waiting_approval", "completed", "failed"].includes(task.status)) {
     actions.prepend(actionButton("download", "下载产物", "secondary", downloadCurrent));
+  }
+  const acceptance = latestJsonArtifact("acceptance");
+  if (!task.runner_id && acceptance?.accepted && ["waiting_approval", "completed"].includes(task.status)) {
+    actions.append(actionButton("git-pull-request-arrow", "创建 MR", "primary", publishCurrent));
   }
 }
 
@@ -292,6 +303,7 @@ function connectStream(id) {
       state.stream.close(); state.stream = null;
       refreshCurrent();
     }
+    if (status === "wait_permission") refreshCurrent();
   });
   state.stream.onerror = () => { if (state.stream) { state.stream.close(); state.stream = null; } };
 }
@@ -303,6 +315,13 @@ async function startCurrent() {
 
 async function cancelCurrent() { await runAction(`/tasks/${state.current}/cancel`, "已请求取消"); }
 async function approveCurrent(action) { await runAction(`/tasks/${state.current}/approve`, "审批已完成", { action }); }
+async function decidePermission(id, allowed) {
+  await runAction(`/permissions/${id}/decision`, allowed ? "权限已批准" : "权限已拒绝", {
+    allowed,
+    reason: allowed ? "Approved by project owner" : "Denied by project owner",
+  });
+}
+async function publishCurrent() { await runAction(`/tasks/${state.current}/publish`, "合并请求已创建", {}); }
 function downloadCurrent() { window.location.assign(`/api/tasks/${state.current}/download`); }
 
 async function runAction(path, success, body = null) {

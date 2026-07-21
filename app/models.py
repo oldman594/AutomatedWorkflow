@@ -129,16 +129,73 @@ class Artifact(BaseModel):
     created_at: str
 
 
+class PermissionStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+
+
+class PermissionRequestRecord(BaseModel):
+    id: str
+    task_id: str
+    runner_id: str
+    operation: str
+    reason: str
+    status: PermissionStatus
+    requested_at: str
+    resolved_by: str | None = None
+    resolved_at: str | None = None
+
+
+class PermissionDecision(BaseModel):
+    allowed: bool
+    reason: str = Field(default="", max_length=2000)
+
+
+class GitProvider(StrEnum):
+    GITHUB = "github"
+    GITLAB = "gitlab"
+
+
+class GitIntegrationCreate(BaseModel):
+    provider: GitProvider
+    base_url: str = Field(min_length=8, max_length=500)
+    repository: str = Field(min_length=3, max_length=500)
+    token: str = Field(min_length=8, max_length=4000)
+
+
+class GitIntegrationInfo(BaseModel):
+    project_id: str
+    provider: GitProvider
+    base_url: str
+    repository: str
+    created_at: str
+    updated_at: str
+
+
+class PublishRequest(BaseModel):
+    base_branch: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class PublishResult(BaseModel):
+    provider: GitProvider
+    branch: str
+    url: str
+    external_id: str
+
+
 class TaskDetail(BaseModel):
     task: Task
     events: list[Event]
     artifacts: list[Artifact]
+    permissions: list[PermissionRequestRecord] = Field(default_factory=list)
 
 
 class RunnerRegistration(BaseModel):
     id: str = Field(min_length=2, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
     name: str = Field(min_length=1, max_length=160)
     platform: str = Field(min_length=1, max_length=160)
+    version: str = Field(default="0.0.0", max_length=40)
     roots: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     project_id: str = "default"
