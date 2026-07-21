@@ -2,7 +2,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from app.models import Stage, TaskCreate, TaskStatus
+from app.models import JobStatus, Stage, TaskCreate, TaskStatus
 from app.storage import Storage
 
 
@@ -57,6 +57,55 @@ def test_recover_interrupted_tasks(tmp_path: Path) -> None:
     recovered = storage.get_task(task.id)
     assert recovered.status == TaskStatus.FAILED
     assert "服务重启" in recovered.error
+
+
+def test_durable_job_lease_recovery_checkpoint_and_retry(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "jobs.db")
+    task = storage.create_task(
+        TaskCreate(title="Durable", requirement="Recover leased job", repository="/tmp/repo"),
+        "gpt-test",
+    )
+    storage.update_task(task.id, status=TaskStatus.QUEUED)
+    storage.enqueue_job(task.id, "server", max_attempts=3)
+
+    first = storage.lease_job("server", "worker-1", lease_seconds=60)
+    assert first is not None
+    assert first.attempts == 1
+    assert storage.lease_job("server", "worker-2", lease_seconds=60) is None
+    storage.checkpoint_job(task.id, Stage.CODER)
+    assert storage.get_job_for_task(task.id).checkpoint == Stage.CODER
+
+    with storage._connect() as db:
+        db.execute(
+            "UPDATE jobs SET lease_expires_at = ? WHERE task_id = ?",
+            ("2000-01-01T00:00:00+00:00", task.id),
+        )
+    assert storage.recover_expired_jobs("server") == 1
+    second = storage.lease_job("server", "worker-2", lease_seconds=60)
+    assert second is not None
+    assert second.attempts == 2
+    storage.complete_job(task.id, "worker-2")
+    assert storage.get_job_for_task(task.id).status == JobStatus.COMPLETED
+
+    retry_task = storage.create_task(
+        TaskCreate(title="Retry", requirement="Retry failed job", repository="/tmp/repo"),
+        "gpt-test",
+    )
+    storage.update_task(retry_task.id, status=TaskStatus.FAILED, error="temporary")
+    storage.enqueue_job(retry_task.id, "server", max_attempts=2)
+    assert storage.lease_job("server", "worker-1", lease_seconds=60) is not None
+    assert storage.fail_job(retry_task.id, "worker-1", "temporary", 1) is True
+    assert storage.get_job_for_task(retry_task.id).status == JobStatus.PENDING
+    assert storage.get_task(retry_task.id).status == TaskStatus.QUEUED
+
+    with storage._connect() as db:
+        db.execute(
+            "UPDATE jobs SET available_at = ? WHERE task_id = ?",
+            ("2000-01-01T00:00:00+00:00", retry_task.id),
+        )
+    assert storage.lease_job("server", "worker-2", lease_seconds=60) is not None
+    assert storage.fail_job(retry_task.id, "worker-2", "permanent", 1) is False
+    assert storage.get_job_for_task(retry_task.id).status == JobStatus.FAILED
 
 
 def test_existing_database_adds_local_changes_column(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
 from app.auth import authenticate_runner
 from app.config import Settings
-from app.models import RunnerRegistration, Stage, TaskStatus
+from app.models import JobStatus, RunnerRegistration, Stage, TaskStatus
 from app.protocol import MessageEnvelope, MessageType
 from app.storage import Storage
 
@@ -146,6 +146,9 @@ class RunnerGatewaySession:
                 status=str(payload.get("status") or "idle"),
                 metrics=metrics,
             )
+            active = self.storage.get_runner_active_task(self.runner_id)
+            if active and payload.get("status") == "busy":
+                self.storage.renew_job(active.id, self.runner_id, self.settings.job_lease_seconds)
             await self._send(
                 MessageType.HEARTBEAT_ACK,
                 payload={"ackSeq": envelope.seq},
@@ -155,6 +158,10 @@ class RunnerGatewaySession:
             capabilities = [name for name, enabled in envelope.payload.items() if enabled]
             self.storage.update_runner_capabilities(self.runner_id, capabilities)
         elif envelope.type == MessageType.TASK_ACCEPTED:
+            if envelope.task_id:
+                self.storage.renew_job(
+                    envelope.task_id, self.runner_id, self.settings.job_lease_seconds
+                )
             self._update_task(
                 envelope.task_id,
                 status=TaskStatus.ACCEPTED,
@@ -165,6 +172,10 @@ class RunnerGatewaySession:
                     f"Local Runner {self.runner_id} 已接受任务",
                 )
         elif envelope.type == MessageType.TASK_PROGRESS:
+            if envelope.task_id:
+                self.storage.renew_job(
+                    envelope.task_id, self.runner_id, self.settings.job_lease_seconds
+                )
             if not envelope.payload.get("persisted"):
                 step = str(envelope.payload.get("step") or "")
                 fields: dict[str, Any] = {"status": TaskStatus.RUNNING}
@@ -234,6 +245,8 @@ class RunnerGatewaySession:
                     status=TaskStatus.WAITING_APPROVAL,
                     progress=100,
                 )
+                if envelope.task_id:
+                    self.storage.complete_job(envelope.task_id, self.runner_id)
         elif envelope.type == MessageType.TASK_FAILED:
             if not envelope.payload.get("persisted"):
                 self._update_task(
@@ -241,14 +254,24 @@ class RunnerGatewaySession:
                     status=TaskStatus.FAILED,
                     error=str(envelope.payload.get("reason") or "Runner task failed"),
                 )
+                if envelope.task_id:
+                    self.storage.fail_job(
+                        envelope.task_id,
+                        self.runner_id,
+                        str(envelope.payload.get("reason") or "Runner task failed"),
+                        self.settings.job_retry_base_seconds,
+                    )
         elif envelope.type == MessageType.TASK_CANCELLED:
             if not envelope.payload.get("persisted"):
                 self._update_task(envelope.task_id, status=TaskStatus.CANCELLED)
+                if envelope.task_id:
+                    self.storage.complete_job(envelope.task_id, self.runner_id, JobStatus.CANCELLED)
         await self._ack(envelope)
 
     async def _dispatch_control_messages(self) -> None:
         if not self.runner_id:
             return
+        self.storage.recover_expired_jobs(f"runner:{self.runner_id}")
         active = self.storage.get_runner_active_task(self.runner_id)
         if active and active.cancel_requested and active.id not in self.cancel_sent:
             await self._send(MessageType.CANCEL_TASK, task_id=active.id)
@@ -256,7 +279,7 @@ class RunnerGatewaySession:
             return
         if active:
             return
-        task = self.storage.assign_runner_task(self.runner_id)
+        task = self.storage.assign_runner_task(self.runner_id, self.settings.job_lease_seconds)
         if not task:
             return
         await self._send(

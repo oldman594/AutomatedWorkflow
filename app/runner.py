@@ -179,6 +179,9 @@ class RemoteStorage:
         response = self._request("GET", f"/runner/{self.runner_id}/tasks/{task_id}/artifacts")
         return [Artifact.model_validate(item) for item in response.json()]
 
+    def checkpoint_job(self, task_id: str, stage: Stage) -> None:
+        return None
+
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:
             response = self.client.request(method, self._path_prefix + path, **kwargs)

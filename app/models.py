@@ -24,6 +24,14 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class JobStatus(StrEnum):
+    PENDING = "pending"
+    LEASED = "leased"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class Stage(StrEnum):
     PRODUCT = "product"
     PLANNER = "planner"
@@ -83,6 +91,22 @@ class Task(BaseModel):
     progress: int = 0
     error: str | None = None
     cancel_requested: bool = False
+    created_at: str
+    updated_at: str
+
+
+class Job(BaseModel):
+    id: str
+    task_id: str
+    target: str
+    status: JobStatus
+    attempts: int
+    max_attempts: int
+    available_at: str
+    lease_owner: str | None = None
+    lease_expires_at: str | None = None
+    checkpoint: str | None = None
+    last_error: str | None = None
     created_at: str
     updated_at: str
 

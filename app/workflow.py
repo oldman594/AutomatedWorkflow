@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import re
 import traceback
-from concurrent.futures import ThreadPoolExecutor
-from threading import Lock
+from pathlib import Path
 
 from app.agents import AgentClient
 from app.config import Settings
@@ -14,6 +13,7 @@ from app.models import (
     DeliveryOutput,
     PlanOutput,
     ProductSpec,
+    ReadingOutput,
     RequirementAssessment,
     ReviewOutput,
     Stage,
@@ -48,59 +48,47 @@ class WorkflowEngine:
         self.storage = storage
         self.agents = AgentClient(settings)
         self.shell_executor = create_shell_executor(settings)
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="autoflow")
-        self._active: set[str] = set()
-        self._lock = Lock()
 
     def start(self, task_id: str) -> Task:
         task = self.storage.get_task(task_id)
         if task.status not in {TaskStatus.DRAFT, TaskStatus.FAILED}:
             raise ValueError(f"Task cannot start from {task.status}")
-        if task.status == TaskStatus.FAILED:
-            has_worktree = any(
-                artifact.kind == "worktree" for artifact in self.storage.list_artifacts(task_id)
-            )
-            worktree_path = (self.settings.worktree_root / task.id).resolve()
-            if has_worktree or worktree_path.exists():
-                raise ValueError("任务已生成工作区，不能从头重试；请审查现有变更或创建新任务")
         if task.runner_id:
             try:
                 self.storage.get_runner(task.runner_id)
             except KeyError as exc:
                 raise ValueError("Task Local Runner is not registered") from exc
-            self.storage.update_task(
-                task_id,
-                status=TaskStatus.QUEUED,
-                progress=1,
-                error=None,
-                cancel_requested=False,
-            )
-            self.storage.add_event(task_id, f"任务已进入 Local Runner 队列：{task.runner_id}")
-            return self.storage.get_task(task_id)
-        if not self.settings.mock_llm:
+            target = f"runner:{task.runner_id}"
+        else:
+            target = "server"
+        if not task.runner_id and not self.settings.mock_llm:
             route_errors = self.settings.route_errors()
             if route_errors:
                 raise ValueError("Agent 路由配置无效：" + "；".join(route_errors))
-        with self._lock:
-            if task_id in self._active:
-                raise ValueError("Task is already running")
-            self._active.add(task_id)
         self.storage.update_task(
             task_id, status=TaskStatus.QUEUED, progress=1, error=None, cancel_requested=False
         )
+        self.storage.enqueue_job(task_id, target, self.settings.job_max_attempts)
         message = (
             "失败任务已重新进入执行队列"
             if task.status == TaskStatus.FAILED
             else "任务已进入执行队列"
         )
+        if task.runner_id:
+            message += f"：{task.runner_id}"
         self.storage.add_event(task_id, message)
-        self._executor.submit(self._run_guarded, task_id)
         return self.storage.get_task(task_id)
 
     def cancel(self, task_id: str) -> Task:
         task = self.storage.get_task(task_id)
         if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             return task
+        if task.status == TaskStatus.QUEUED:
+            self.storage.cancel_job(task_id)
+            self.storage.add_event(task_id, "已取消排队任务", level="warning")
+            return self.storage.update_task(
+                task_id, status=TaskStatus.CANCELLED, cancel_requested=True
+            )
         self.storage.add_event(task_id, "已请求取消任务", level="warning")
         return self.storage.update_task(task_id, cancel_requested=True)
 
@@ -160,26 +148,32 @@ class WorkflowEngine:
                 level="error",
                 data={"trace": traceback.format_exc()[-8000:]},
             )
-        finally:
-            with self._lock:
-                self._active.discard(task_id)
 
     def _run(self, task_id: str) -> None:
         task = self.storage.update_task(task_id, status=TaskStatus.RUNNING)
         source = Repository(task.repository, self.settings.allowed_roots)
-        source_head = source.head_oid()
         branch = task.branch or f"autoflow/{self._slug(task.title)}-{task.id[:6]}"
         worktree_path = (self.settings.worktree_root / task.id).resolve()
-        repository = source.create_worktree(worktree_path, branch)
-        self.storage.update_task(task_id, branch=branch)
-        self.storage.add_artifact(task_id, "worktree", str(worktree_path))
-        self.storage.add_event(task_id, f"隔离 worktree 已就绪，分支：{branch}")
-        if task.sync_to_source and repository.head_oid() != source_head:
+        artifacts = self.storage.list_artifacts(task_id)
+        artifact_values = {artifact.kind: artifact.content for artifact in artifacts}
+        existing_worktree = artifact_values.get("worktree")
+        if existing_worktree and Path(existing_worktree).is_dir():
+            repository = Repository(existing_worktree, self.settings.allowed_roots)
+            source_head = artifact_values.get("source_head") or source.head_oid()
+            self.storage.add_event(task_id, f"从持久化工作区恢复任务：{existing_worktree}")
+        else:
+            source_head = source.head_oid()
+            repository = source.create_worktree(worktree_path, branch)
+            self.storage.update_task(task_id, branch=branch)
+            self.storage.add_artifact(task_id, "worktree", str(worktree_path))
+            self.storage.add_artifact(task_id, "source_head", source_head or "")
+            self.storage.add_event(task_id, f"隔离 worktree 已就绪，分支：{branch}")
+        if not existing_worktree and task.sync_to_source and repository.head_oid() != source_head:
             raise RepositoryError(
                 "直接同步要求目标分支从源仓库当前 HEAD 创建；请留空目标分支或使用新分支"
             )
 
-        if task.include_local_changes:
+        if task.include_local_changes and not existing_worktree:
             snapshot = source.copy_local_changes_to(repository, self.settings.max_download_bytes)
             self.storage.add_artifact(
                 task_id,
@@ -207,60 +201,85 @@ class WorkflowEngine:
                 self.storage.add_event(task_id, "源仓库没有需要纳入的本地未提交代码")
 
         inventory = repository.inventory()
-        product_spec, assessment = self._align_product_requirement(task, inventory)
+        product_spec_raw = artifact_values.get("product_spec")
+        assessment_raw = artifact_values.get("requirement_assessment")
+        if product_spec_raw and assessment_raw:
+            candidate_spec = ProductSpec.model_validate_json(product_spec_raw)
+            candidate_assessment = RequirementAssessment.model_validate_json(assessment_raw)
+            if (
+                candidate_spec.ready
+                and candidate_assessment.approved
+                and candidate_assessment.overall_score >= self.settings.product_quality_threshold
+            ):
+                product_spec = candidate_spec
+            else:
+                product_spec, _ = self._align_product_requirement(task, inventory)
+        else:
+            product_spec, _ = self._align_product_requirement(task, inventory)
         requirement = product_spec.refined_requirement
 
-        self._enter(task_id, Stage.PLANNER, "Planner 正在拆分已对齐的产品需求", "planner")
-        plan = self.agents.plan(requirement, inventory, repository.recent_history(), task.model)
-        if not plan.acceptance_criteria:
-            plan.acceptance_criteria = product_spec.acceptance_criteria
-        self.storage.add_artifact(task_id, "plan", plan.model_dump_json(indent=2))
-        self.storage.add_event(
-            task_id,
-            f"计划已生成，共 {len(plan.todos)} 个 Todo",
-            stage=Stage.PLANNER,
-            data={"todos": plan.todos, "questions": plan.questions},
-        )
+        plan_raw = artifact_values.get("plan")
+        if plan_raw:
+            plan = PlanOutput.model_validate_json(plan_raw)
+        else:
+            self._enter(task_id, Stage.PLANNER, "Planner 正在拆分已对齐的产品需求", "planner")
+            plan = self.agents.plan(requirement, inventory, repository.recent_history(), task.model)
+            if not plan.acceptance_criteria:
+                plan.acceptance_criteria = product_spec.acceptance_criteria
+            self.storage.add_artifact(task_id, "plan", plan.model_dump_json(indent=2))
+            self.storage.add_event(
+                task_id,
+                f"计划已生成，共 {len(plan.todos)} 个 Todo",
+                stage=Stage.PLANNER,
+                data={"todos": plan.todos, "questions": plan.questions},
+            )
         self._check_cancelled(task_id)
 
-        self._enter(task_id, Stage.READER, "Reader 正在阅读相关代码上下文", "reader")
         context = repository.collect_context(
             plan.likely_paths, requirement, self.settings.max_context_chars
         )
         context_manifest = self._context_manifest(context)
-        reading = self.agents.read_code(requirement, plan, context, task.model)
-        self.storage.add_artifact(task_id, "context_manifest", context_manifest)
-        self.storage.add_artifact(task_id, "reading", reading.model_dump_json(indent=2))
-        self.storage.add_event(
-            task_id,
-            "仓库上下文阅读完成",
-            stage=Stage.READER,
-            data={
-                "characters": len(context),
-                "files": context_manifest.splitlines(),
-                "route": self.settings.agent_routes["reader"],
-            },
-        )
+        reading_raw = artifact_values.get("reading")
+        if reading_raw:
+            reading = ReadingOutput.model_validate_json(reading_raw)
+        else:
+            self._enter(task_id, Stage.READER, "Reader 正在阅读相关代码上下文", "reader")
+            reading = self.agents.read_code(requirement, plan, context, task.model)
+            self.storage.add_artifact(task_id, "context_manifest", context_manifest)
+            self.storage.add_artifact(task_id, "reading", reading.model_dump_json(indent=2))
+            self.storage.add_event(
+                task_id,
+                "仓库上下文阅读完成",
+                stage=Stage.READER,
+                data={
+                    "characters": len(context),
+                    "files": context_manifest.splitlines(),
+                    "route": self.settings.agent_routes["reader"],
+                },
+            )
         self._check_cancelled(task_id)
 
         enriched_context = (
             f"{context}\n\n--- READER ANALYSIS ---\n{reading.model_dump_json(indent=2)}"
         )
-        self._enter(task_id, Stage.DESIGN, "Architecture Agent 正在设计变更", "architecture")
-        design = self.agents.design(requirement, plan, enriched_context, task.model)
-        self.storage.add_artifact(task_id, "design", design)
-        self.storage.add_event(task_id, "设计方案已完成", stage=Stage.DESIGN)
+        design = artifact_values.get("design")
+        if not design:
+            self._enter(task_id, Stage.DESIGN, "Architecture Agent 正在设计变更", "architecture")
+            design = self.agents.design(requirement, plan, enriched_context, task.model)
+            self.storage.add_artifact(task_id, "design", design)
+            self.storage.add_event(task_id, "设计方案已完成", stage=Stage.DESIGN)
 
-        self._enter(task_id, Stage.CODER, "Coder 正在实现计划中的变更", "coder")
-        code = self.agents.code(requirement, plan, design, enriched_context, task.model)
-        written = self._apply_code(repository, code, task.auto_apply)
-        self.storage.add_artifact(task_id, "code_summary", code.model_dump_json(indent=2))
-        self.storage.add_event(
-            task_id,
-            f"Coder 生成了 {len(code.changes)} 个文件变更",
-            stage=Stage.CODER,
-            data={"files": written},
-        )
+        if not artifact_values.get("code_summary"):
+            self._enter(task_id, Stage.CODER, "Coder 正在实现计划中的变更", "coder")
+            code = self.agents.code(requirement, plan, design, enriched_context, task.model)
+            written = self._apply_code(repository, code, task.auto_apply)
+            self.storage.add_artifact(task_id, "code_summary", code.model_dump_json(indent=2))
+            self.storage.add_event(
+                task_id,
+                f"Coder 生成了 {len(code.changes)} 个文件变更",
+                stage=Stage.CODER,
+                data={"files": written},
+            )
         self._check_cancelled(task_id)
 
         detected_build, detected_test = repository.detect_commands()
@@ -283,10 +302,14 @@ class WorkflowEngine:
         source_applied = False
         source_apply_error: str | None = None
         if task.sync_to_source:
-            if accepted:
+            source_sync_raw = artifact_values.get("source_sync")
+            if source_sync_raw and json.loads(source_sync_raw).get("applied"):
+                source_applied = True
+            elif accepted:
                 try:
                     source.apply_patch(repository.diff(), source_head)
                     source_applied = True
+                    self.storage.add_artifact(task_id, "source_sync", json.dumps({"applied": True}))
                     self.storage.add_event(
                         task_id,
                         f"已将 {len(changed_files)} 个 AI 变更文件同步到本地仓库",
@@ -667,6 +690,7 @@ class WorkflowEngine:
 
     def _enter(self, task_id: str, stage: Stage, message: str, role: str | None = None) -> None:
         self._check_cancelled(task_id)
+        self.storage.checkpoint_job(task_id, stage)
         self.storage.update_task(
             task_id, status=TaskStatus.RUNNING, stage=stage, progress=STAGE_PROGRESS[stage]
         )

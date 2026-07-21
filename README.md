@@ -78,6 +78,12 @@ AUTOFLOW_SANDBOX_MODE=host
 
 `host` 模式会直接继承 Runner 进程的本机权限和环境，不能用于外部用户任务。需要下载依赖的任务应使用预装依赖的自定义镜像；不要直接为所有任务开放网络。
 
+## 持久化任务队列
+
+任务启动只写入数据库 Job，不再依赖 API 进程内的临时线程队列。Server Worker 和 Local Runner 都通过原子租约领取任务；执行期间按租约时长的三分之一续租。Worker 或 Runner 失联后，过期租约会重新排队，并按指数退避自动重试。
+
+每次进入工作流阶段都会更新 Job checkpoint。重试或服务重启后复用原 worktree，并从已有的产品规格、计划、阅读、设计和代码 Artifact 继续；源仓库补丁同步结果也会单独持久化，避免重复应用。
+
 ## 快速启动
 
 需要 Python 3.11+、Git 和 ripgrep。
@@ -201,6 +207,10 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_MAX_PRODUCT_ITERATIONS` | `3` | 需求规格自动对齐轮数上限 |
 | `AUTOFLOW_MAX_ACCEPTANCE_ITERATIONS` | `2` | 产品验收纠偏轮数上限 |
 | `AUTOFLOW_PRODUCT_QUALITY_THRESHOLD` | `85` | 需求和验收通过分数 |
+| `AUTOFLOW_WORKER_CONCURRENCY` | `2` | 当前服务实例的持久化 Worker 数量 |
+| `AUTOFLOW_JOB_LEASE_SECONDS` | `60` | Job 租约有效期 |
+| `AUTOFLOW_JOB_MAX_ATTEMPTS` | `3` | 基础设施失败时的最大任务尝试次数 |
+| `AUTOFLOW_JOB_RETRY_BASE_SECONDS` | `5` | 指数退避的基础秒数 |
 | `AUTOFLOW_MAX_CONTEXT_CHARS` | `80000` | 单阶段代码上下文字符上限 |
 | `AUTOFLOW_MAX_DOWNLOAD_BYTES` | `104857600` | 交付 ZIP 内文件总大小上限 |
 | `AUTOFLOW_SANDBOX_MODE` | `docker` | 命令执行模式：生产使用 `docker`，可信开发可显式使用 `host` |

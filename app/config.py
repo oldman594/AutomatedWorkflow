@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     max_context_chars: int = 80_000
     max_download_bytes: int = 100 * 1024 * 1024
     command_timeout_seconds: int = 900
+    worker_concurrency: int = 2
+    job_lease_seconds: int = 60
+    job_max_attempts: int = 3
+    job_retry_base_seconds: int = 5
     sandbox_mode: SandboxMode = "docker"
     sandbox_image: str = "autoflow-sandbox:latest"
     sandbox_network: str = "none"

@@ -6,6 +6,7 @@ import sqlite3
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -13,6 +14,8 @@ from typing import Any
 from app.models import (
     Artifact,
     Event,
+    Job,
+    JobStatus,
     Project,
     ProjectAccess,
     ProjectMember,
@@ -156,6 +159,21 @@ class Storage:
                     created_at TEXT NOT NULL,
                     revoked_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE,
+                    target TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL,
+                    available_at TEXT NOT NULL,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    checkpoint TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, id);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_task ON artifacts(task_id, id);
                 CREATE INDEX IF NOT EXISTS idx_runner_messages_replay
@@ -163,6 +181,8 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, expires_at);
                 CREATE INDEX IF NOT EXISTS idx_project_members_user
                     ON project_members(user_id, project_id);
+                CREATE INDEX IF NOT EXISTS idx_jobs_claim
+                    ON jobs(target, status, available_at, created_at);
                 """
             )
             columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
@@ -250,6 +270,185 @@ class Storage:
                     [*project_ids, limit],
                 ).fetchall()
         return [self._row_to_task(row) for row in rows]
+
+    def enqueue_job(self, task_id: str, target: str, max_attempts: int) -> Job:
+        now = utc_now()
+        job_id = uuid.uuid4().hex
+        with self._lock, self._connect() as db:
+            db.execute(
+                """INSERT INTO jobs (
+                    id, task_id, target, status, max_attempts, available_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    target = excluded.target,
+                    status = excluded.status,
+                    attempts = 0,
+                    max_attempts = excluded.max_attempts,
+                    available_at = excluded.available_at,
+                    lease_owner = NULL,
+                    lease_expires_at = NULL,
+                    last_error = NULL,
+                    updated_at = excluded.updated_at""",
+                (
+                    job_id,
+                    task_id,
+                    target,
+                    JobStatus.PENDING,
+                    max_attempts,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_job_for_task(task_id)
+
+    def get_job_for_task(self, task_id: str) -> Job:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM jobs WHERE task_id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        return Job(**dict(row))
+
+    def recover_expired_jobs(self, target: str | None = None) -> int:
+        now = utc_now()
+        with self._lock, self._connect() as db:
+            conditions = "status = ? AND lease_expires_at <= ?"
+            values: list[Any] = [JobStatus.LEASED, now]
+            if target is not None:
+                conditions += " AND target = ?"
+                values.append(target)
+            rows = db.execute(f"SELECT task_id FROM jobs WHERE {conditions}", values).fetchall()
+            if not rows:
+                return 0
+            task_ids = [str(row["task_id"]) for row in rows]
+            placeholders = ",".join("?" for _ in task_ids)
+            db.execute(
+                f"""UPDATE jobs SET status = ?, lease_owner = NULL,
+                    lease_expires_at = NULL, updated_at = ? WHERE task_id IN ({placeholders})""",
+                [JobStatus.PENDING, now, *task_ids],
+            )
+            db.execute(
+                f"""UPDATE tasks SET status = ?, error = NULL, updated_at = ?
+                    WHERE id IN ({placeholders})""",
+                [TaskStatus.QUEUED, now, *task_ids],
+            )
+            return len(task_ids)
+
+    def lease_job(self, target: str, owner: str, lease_seconds: int) -> Job | None:
+        now = datetime.now(UTC)
+        now_text = now.isoformat()
+        expires_at = (now + timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            expired = db.execute(
+                """SELECT task_id FROM jobs
+                WHERE target = ? AND status = ? AND lease_expires_at <= ?""",
+                (target, JobStatus.LEASED, now_text),
+            ).fetchall()
+            if expired:
+                task_ids = [str(row["task_id"]) for row in expired]
+                placeholders = ",".join("?" for _ in task_ids)
+                db.execute(
+                    f"""UPDATE jobs SET status = ?, lease_owner = NULL,
+                        lease_expires_at = NULL, updated_at = ?
+                        WHERE task_id IN ({placeholders})""",
+                    [JobStatus.PENDING, now_text, *task_ids],
+                )
+                db.execute(
+                    f"""UPDATE tasks SET status = ?, error = NULL, updated_at = ?
+                        WHERE id IN ({placeholders})""",
+                    [TaskStatus.QUEUED, now_text, *task_ids],
+                )
+            row = db.execute(
+                """SELECT * FROM jobs
+                WHERE target = ? AND status = ? AND available_at <= ?
+                ORDER BY created_at LIMIT 1""",
+                (target, JobStatus.PENDING, now_text),
+            ).fetchone()
+            if row is None:
+                return None
+            db.execute(
+                """UPDATE jobs SET status = ?, attempts = attempts + 1,
+                    lease_owner = ?, lease_expires_at = ?, updated_at = ?
+                WHERE id = ?""",
+                (JobStatus.LEASED, owner, expires_at, now_text, row["id"]),
+            )
+            leased = db.execute("SELECT * FROM jobs WHERE id = ?", (row["id"],)).fetchone()
+        return Job(**dict(leased))
+
+    def renew_job(self, task_id: str, owner: str, lease_seconds: int) -> bool:
+        expires_at = (datetime.now(UTC) + timedelta(seconds=lease_seconds)).isoformat()
+        with self._lock, self._connect() as db:
+            result = db.execute(
+                """UPDATE jobs SET lease_expires_at = ?, updated_at = ?
+                WHERE task_id = ? AND status = ? AND lease_owner = ?""",
+                (expires_at, utc_now(), task_id, JobStatus.LEASED, owner),
+            )
+            return result.rowcount > 0
+
+    def checkpoint_job(self, task_id: str, stage: Stage) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                "UPDATE jobs SET checkpoint = ?, updated_at = ? WHERE task_id = ?",
+                (stage, utc_now(), task_id),
+            )
+
+    def complete_job(
+        self, task_id: str, owner: str, status: JobStatus = JobStatus.COMPLETED
+    ) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                """UPDATE jobs SET status = ?, lease_owner = NULL,
+                    lease_expires_at = NULL, updated_at = ?
+                WHERE task_id = ? AND lease_owner = ?""",
+                (status, utc_now(), task_id, owner),
+            )
+
+    def fail_job(self, task_id: str, owner: str, error: str, retry_base_seconds: int) -> bool:
+        now = datetime.now(UTC)
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                """SELECT attempts, max_attempts FROM jobs
+                WHERE task_id = ? AND lease_owner = ?""",
+                (task_id, owner),
+            ).fetchone()
+            if row is None:
+                return False
+            retry = int(row["attempts"]) < int(row["max_attempts"])
+            if retry:
+                delay = retry_base_seconds * (2 ** max(0, int(row["attempts"]) - 1))
+                available_at = (now + timedelta(seconds=delay)).isoformat()
+                status = JobStatus.PENDING
+            else:
+                available_at = now.isoformat()
+                status = JobStatus.FAILED
+            db.execute(
+                """UPDATE jobs SET status = ?, available_at = ?, lease_owner = NULL,
+                    lease_expires_at = NULL, last_error = ?, updated_at = ?
+                WHERE task_id = ?""",
+                (status, available_at, error[-8000:], now.isoformat(), task_id),
+            )
+            if retry:
+                db.execute(
+                    """UPDATE tasks SET status = ?, error = ?, updated_at = ? WHERE id = ?""",
+                    (
+                        TaskStatus.QUEUED,
+                        f"任务将在 {delay} 秒后重试：{error}"[-8000:],
+                        now.isoformat(),
+                        task_id,
+                    ),
+                )
+            return retry
+
+    def cancel_job(self, task_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                """UPDATE jobs SET status = ?, lease_owner = NULL,
+                    lease_expires_at = NULL, updated_at = ?
+                WHERE task_id = ? AND status = ?""",
+                (JobStatus.CANCELLED, utc_now(), task_id, JobStatus.PENDING),
+            )
 
     def recover_interrupted_tasks(self) -> int:
         now = utc_now()
@@ -548,57 +747,17 @@ class Storage:
                 (utc_now(), runner_id),
             )
 
-    def lease_runner_task(self, runner_id: str) -> Task | None:
-        now = utc_now()
-        with self._lock, self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                """SELECT id FROM tasks
-                WHERE runner_id = ? AND status = ?
-                ORDER BY created_at LIMIT 1""",
-                (runner_id, TaskStatus.QUEUED),
-            ).fetchone()
-            if row is None:
-                return None
-            db.execute(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                (TaskStatus.RUNNING, now, row["id"]),
-            )
-            task_id = row["id"]
-        return self.get_task(task_id)
+    def lease_runner_task(self, runner_id: str, lease_seconds: int = 60) -> Task | None:
+        job = self.lease_job(f"runner:{runner_id}", runner_id, lease_seconds)
+        if job is None:
+            return None
+        return self.update_task(job.task_id, status=TaskStatus.RUNNING)
 
-    def assign_runner_task(self, runner_id: str) -> Task | None:
-        now = utc_now()
-        with self._lock, self._connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            active = db.execute(
-                """SELECT id FROM tasks
-                WHERE runner_id = ? AND status IN (?, ?, ?, ?)
-                ORDER BY created_at LIMIT 1""",
-                (
-                    runner_id,
-                    TaskStatus.ASSIGNED,
-                    TaskStatus.ACCEPTED,
-                    TaskStatus.RUNNING,
-                    TaskStatus.WAIT_PERMISSION,
-                ),
-            ).fetchone()
-            if active is not None:
-                return None
-            row = db.execute(
-                """SELECT id FROM tasks
-                WHERE runner_id = ? AND status = ?
-                ORDER BY created_at LIMIT 1""",
-                (runner_id, TaskStatus.QUEUED),
-            ).fetchone()
-            if row is None:
-                return None
-            db.execute(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                (TaskStatus.ASSIGNED, now, row["id"]),
-            )
-            task_id = row["id"]
-        return self.get_task(task_id)
+    def assign_runner_task(self, runner_id: str, lease_seconds: int = 60) -> Task | None:
+        job = self.lease_job(f"runner:{runner_id}", runner_id, lease_seconds)
+        if job is None:
+            return None
+        return self.update_task(job.task_id, status=TaskStatus.ASSIGNED)
 
     def get_runner_active_task(self, runner_id: str) -> Task | None:
         with self._connect() as db:
