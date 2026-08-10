@@ -24,6 +24,8 @@ services:
   autoflow:
     build: .
     restart: unless-stopped
+    env_file:
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -33,7 +35,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AUTOFLOW_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-autoflow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autoflow}
       AUTOFLOW_RUNNER_TOKEN: ${AUTOFLOW_RUNNER_TOKEN:-}
-      AUTOFLOW_AUTH_ENABLED: "true"
+      AUTOFLOW_AUTH_ENABLED: ${AUTOFLOW_AUTH_ENABLED:-true}
       AUTOFLOW_AUTH_COOKIE_SECURE: ${AUTOFLOW_AUTH_COOKIE_SECURE:-true}
       AUTOFLOW_REGISTRATION_ENABLED: ${AUTOFLOW_REGISTRATION_ENABLED:-true}
       AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL: ${AUTOFLOW_BOOTSTRAP_ADMIN_EMAIL:?set bootstrap admin email}
@@ -47,6 +49,7 @@ services:
       AUTOFLOW_SMTP_PASSWORD: ${AUTOFLOW_SMTP_PASSWORD:-}
       AUTOFLOW_SMTP_FROM_EMAIL: ${AUTOFLOW_SMTP_FROM_EMAIL:?set SMTP from email}
       AUTOFLOW_CREDENTIAL_ENCRYPTION_KEY: ${AUTOFLOW_CREDENTIAL_ENCRYPTION_KEY:?set credential encryption key}
+      AUTOFLOW_MOCK_LLM: ${AUTOFLOW_MOCK_LLM:-false}
       AUTOFLOW_RUNNER_MIN_VERSION: ${AUTOFLOW_RUNNER_MIN_VERSION:-1.1.0}
       AUTOFLOW_RUNNER_RECOMMENDED_VERSION: ${AUTOFLOW_RUNNER_RECOMMENDED_VERSION:-1.1.0}
       AUTOFLOW_RUNNER_RELEASE_MANIFEST_URL: ${AUTOFLOW_RUNNER_RELEASE_MANIFEST_URL:-}
@@ -54,11 +57,18 @@ services:
       AUTOFLOW_ALLOWED_ROOTS: ${AUTOFLOW_WORKSPACE:-/workspace}
       AUTOFLOW_WORKTREE_ROOT: ${PWD}/worktrees
       AUTOFLOW_SANDBOX_MODE: ${AUTOFLOW_SANDBOX_MODE:-docker}
+      AUTOFLOW_CONTAINER_RUNTIME: ${AUTOFLOW_CONTAINER_RUNTIME:-docker}
       AUTOFLOW_SANDBOX_IMAGE: ${AUTOFLOW_SANDBOX_IMAGE:-autoflow-sandbox:latest}
     volumes:
       - ${PWD}/worktrees:${PWD}/worktrees
       - ${AUTOFLOW_WORKSPACE:-..}:${AUTOFLOW_WORKSPACE:-/workspace}
       - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/api/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   maintenance:
     build: .

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>AutoFlow Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="titlebar">
+    <div class="brand"><span>AF</span><div><strong>AutoFlow Desktop</strong><small>LOCAL RUNNER CONTROL</small></div></div>
+    <div class="connection"><span id="server-dot" class="dot"></span><span id="server-label">未连接</span></div>
+  </header>
+
+  <main>
+    <section class="runner-strip">
+      <div>
+        <span class="section-label">LOCAL RUNNER</span>
+        <h1 id="runner-heading">本机执行节点</h1>
+        <div class="runner-meta"><span id="runner-state" class="status stopped">已停止</span><span id="runner-pid"></span></div>
+      </div>
+      <div class="runner-actions">
+        <button id="probe-server" class="secondary" type="button">检测服务</button>
+        <button id="open-dashboard" class="secondary" type="button">任务工作台</button>
+        <button id="stop-runner" class="danger hidden" type="button">停止 Runner</button>
+        <button id="start-runner" class="primary" type="button">启动 Runner</button>
+      </div>
+    </section>
+
+    <div class="layout">
+      <form id="settings-form" class="settings">
+        <section>
+          <header><span>01</span><div><h2>服务与节点</h2><small>SERVER AND IDENTITY</small></div></header>
+          <div class="form-grid">
+            <label class="wide"><span>Server URL</span><input id="server-url" type="url" required placeholder="https://autoflow.example.com"></label>
+            <label><span>Runner ID</span><input id="runner-id" required pattern="[A-Za-z0-9._-]+"></label>
+            <label><span>节点名称</span><input id="runner-name" required></label>
+            <label class="wide"><span>Runner Token</span><input id="runner-token" type="password" autocomplete="off"><small id="runner-token-state"></small></label>
+          </div>
+        </section>
+
+        <section>
+          <header><span>02</span><div><h2>本地代码</h2><small>REPOSITORY ACCESS</small></div></header>
+          <div id="root-list" class="root-list"></div>
+          <button id="browse-root" class="secondary compact" type="button">选择目录</button>
+          <button id="add-root" class="secondary compact" type="button">手动添加</button>
+          <div class="form-grid top-gap">
+            <label class="wide"><span>Runner 可执行文件</span><input id="runner-command" placeholder="留空使用安装包 sidecar 或 PATH"></label>
+            <label class="wide"><span>Worktree 目录</span><input id="worktree-root" placeholder="留空使用应用数据目录"></label>
+          </div>
+        </section>
+
+        <section>
+          <header><span>03</span><div><h2>模型凭据</h2><small>SYSTEM KEYRING</small></div></header>
+          <div class="form-grid">
+            <label><span>OpenAI API Key</span><input id="openai-key" type="password" autocomplete="off"><small id="openai-key-state"></small></label>
+            <label><span>DeepSeek API Key</span><input id="deepseek-key" type="password" autocomplete="off"><small id="deepseek-key-state"></small></label>
+            <label><span>豆包 ARK API Key</span><input id="doubao-key" type="password" autocomplete="off"><small id="doubao-key-state"></small></label>
+            <label><span>千问 API Key</span><input id="qwen-key" type="password" autocomplete="off"><small id="qwen-key-state"></small></label>
+            <label><span>默认 Provider</span><select id="provider"></select></label>
+            <label><span>默认模型</span><input id="model" required></label>
+          </div>
+          <label class="toggle-row"><span><strong>Mock LLM</strong><small>仅本地联调</small></span><input id="mock-llm" type="checkbox"></label>
+        </section>
+
+        <section>
+          <header><span>04</span><div><h2>Agent 路由</h2><small>MULTI-PROVIDER ROUTING</small></div></header>
+          <div class="route-table">
+            <div class="route-head"><span>阶段</span><span>Provider</span><span>模型</span></div>
+            <div id="route-list"></div>
+          </div>
+        </section>
+
+        <footer class="form-footer">
+          <span id="save-state"></span>
+          <button id="save-settings" class="primary" type="submit">保存配置</button>
+        </footer>
+      </form>
+
+      <aside class="runtime">
+        <div class="runtime-head"><div><h2>Runner 输出</h2><span id="log-path"></span></div><button id="refresh-log" class="icon-button" type="button" title="刷新日志">&#8635;</button></div>
+        <pre id="runner-log">暂无运行输出</pre>
+      </aside>
+    </div>
+  </main>
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>

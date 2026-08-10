@@ -161,7 +161,11 @@ class GitProvider(StrEnum):
 class GitIntegrationCreate(BaseModel):
     provider: GitProvider
     base_url: str = Field(min_length=8, max_length=500)
-    repository: str = Field(min_length=3, max_length=500)
+    repository: str = Field(
+        min_length=3,
+        max_length=500,
+        pattern=r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$",
+    )
     token: str = Field(min_length=8, max_length=4000)
 
 
@@ -172,6 +176,18 @@ class GitIntegrationInfo(BaseModel):
     repository: str
     created_at: str
     updated_at: str
+
+
+class IntegrationProbe(BaseModel):
+    service: str
+    ok: bool
+    detail: str
+    provider: str | None = None
+    model: str | None = None
+    account: str | None = None
+    repository: str | None = None
+    default_branch: str | None = None
+    can_push: bool | None = None
 
 
 class PublishRequest(BaseModel):

@@ -5,6 +5,7 @@ import io
 import json
 import math
 import secrets
+import time
 import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, W
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.exc import IntegrityError
 
+from app.agents import AgentClient, AgentError
 from app.auth import (
     SESSION_COOKIE,
     RunnerPrincipal,
@@ -25,7 +27,7 @@ from app.auth import (
     require_project_role,
     visible_project_ids,
 )
-from app.config import Settings, get_settings
+from app.config import AGENT_ROLES, Settings, get_settings
 from app.credentials import CredentialVault
 from app.email_auth import EmailDeliveryError, SMTPVerificationSender, digest_email_code
 from app.gateway import run_runner_websocket
@@ -38,6 +40,7 @@ from app.models import (
     EmailCodeVerify,
     GitIntegrationCreate,
     GitIntegrationInfo,
+    IntegrationProbe,
     JobStatus,
     PermissionDecision,
     PermissionRequestRecord,
@@ -159,6 +162,47 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, object]:
             "acceptance_iterations": settings.max_acceptance_iterations,
         },
     }
+
+
+@router.post("/diagnostics/smtp", response_model=IntegrationProbe)
+def probe_smtp(
+    user: User = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+) -> IntegrationProbe:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    try:
+        detail = SMTPVerificationSender(settings).probe()
+    except EmailDeliveryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return IntegrationProbe(service="smtp", ok=True, detail=detail)
+
+
+@router.post("/diagnostics/llm/{role}", response_model=IntegrationProbe)
+def probe_llm(
+    role: str,
+    user: User = Depends(current_user),
+    settings: Settings = Depends(get_settings),
+) -> IntegrationProbe:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    if role not in AGENT_ROLES:
+        raise HTTPException(status_code=404, detail="Unknown agent role")
+    started = time.monotonic()
+    try:
+        provider, model, output = AgentClient(settings).probe(role)
+    except AgentError as exc:
+        raise HTTPException(
+            status_code=502, detail=_redact_provider_error(str(exc), settings)
+        ) from exc
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    return IntegrationProbe(
+        service="llm",
+        ok=True,
+        detail=f"Real model response received in {elapsed_ms} ms: {output}",
+        provider=provider,
+        model=model,
+    )
 
 
 @router.post("/auth/email/request", response_model=EmailChallenge, status_code=202)
@@ -431,7 +475,15 @@ def configure_git_integration(
     if urlsplit(payload.base_url).scheme != "https":
         raise HTTPException(status_code=422, detail="Git platform base URL must use HTTPS")
     try:
+        GitPublisher().validate_credentials(
+            payload.provider,
+            payload.base_url,
+            payload.repository,
+            payload.token,
+        )
         encrypted = CredentialVault(settings).encrypt(payload.token)
+    except RepositoryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return storage.save_git_integration(
@@ -459,6 +511,44 @@ def get_git_integration(
         return integration
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Git integration not configured") from exc
+
+
+@router.post("/projects/{project_id}/git-integration/probe", response_model=IntegrationProbe)
+def probe_git_integration(
+    project_id: str,
+    payload: GitIntegrationCreate,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> IntegrationProbe:
+    require_project_role(
+        storage, user, project_id, ProjectRole.OWNER, auth_enabled=settings.auth_enabled
+    )
+    if urlsplit(payload.base_url).scheme != "https":
+        raise HTTPException(status_code=422, detail="Git platform base URL must use HTTPS")
+    try:
+        return GitPublisher().validate_credentials(
+            payload.provider, payload.base_url, payload.repository, payload.token
+        )
+    except RepositoryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.delete("/projects/{project_id}/git-integration", status_code=204)
+def delete_git_integration(
+    project_id: str,
+    user: User = Depends(current_user),
+    storage: Storage = Depends(get_storage),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    require_project_role(
+        storage, user, project_id, ProjectRole.OWNER, auth_enabled=settings.auth_enabled
+    )
+    try:
+        storage.delete_git_integration(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Git integration not configured") from exc
+    return Response(status_code=204)
 
 
 @router.get("/tasks")
@@ -708,6 +798,19 @@ def publish_task(
         stage=task.stage,
     )
     return result
+
+
+def _redact_provider_error(message: str, settings: Settings) -> str:
+    redacted = message
+    for value in (
+        settings.openai_api_key,
+        settings.deepseek_api_key,
+        settings.doubao_api_key,
+        settings.qwen_api_key,
+    ):
+        if value:
+            redacted = redacted.replace(value, "[REDACTED]")
+    return redacted[-2000:]
 
 
 def _delivery_markdown(title: str, delivery: DeliveryOutput) -> str:

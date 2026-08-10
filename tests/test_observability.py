@@ -6,8 +6,9 @@ from fastapi.testclient import TestClient
 
 from app.alerts import AlertDispatcher
 from app.config import Settings, get_settings
-from app.main import app
+from app.main import app, configuration_readiness
 from app.observability import JsonFormatter
+from app.storage import Storage
 
 
 def test_request_id_readiness_and_protected_metrics(tmp_path: Path, monkeypatch) -> None:
@@ -45,6 +46,27 @@ def test_json_formatter_emits_machine_readable_context() -> None:
     assert payload["event"] == "task.failed"
     assert payload["task_id"] == "task-123"
     assert payload["error"] == "boom"
+
+
+def test_configuration_readiness_fails_closed_for_incomplete_auth(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "readiness.db")
+    settings = Settings(
+        auth_enabled=True,
+        mock_llm=True,
+        bootstrap_admin_email=None,
+        email_code_secret=None,
+        smtp_host=None,
+        smtp_from_email=None,
+        credential_encryption_key=None,
+    )
+    try:
+        status = configuration_readiness(settings, storage)
+    finally:
+        storage.close()
+
+    assert status["ready"] is False
+    assert "Authentication has no initialized user" in status["errors"]
+    assert "AUTOFLOW_EMAIL_CODE_SECRET is not configured" in status["errors"]
 
 
 def test_alert_webhook_is_delivered_in_background(monkeypatch) -> None:

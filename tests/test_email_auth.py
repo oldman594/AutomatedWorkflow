@@ -10,9 +10,20 @@ class FakeSMTP:
     def __init__(self) -> None:
         self.login_values: tuple[str, str] | None = None
         self.message: EmailMessage | None = None
+        self.calls: list[str] = []
 
     def login(self, username: str, password: str) -> None:
+        self.calls.append("login")
         self.login_values = (username, password)
+
+    def ehlo(self) -> None:
+        self.calls.append("ehlo")
+
+    def starttls(self, **_kwargs) -> None:
+        self.calls.append("starttls")
+
+    def noop(self) -> None:
+        self.calls.append("noop")
 
     def send_message(self, message: EmailMessage) -> None:
         self.message = message
@@ -54,3 +65,21 @@ def test_smtp_sender_builds_login_message(monkeypatch) -> None:
 def test_smtp_sender_rejects_missing_configuration() -> None:
     with pytest.raises(EmailDeliveryError, match="尚未配置"):
         SMTPVerificationSender(Settings()).send_code("developer@example.com", "123456", 600)
+
+
+def test_smtp_probe_negotiates_starttls_before_authentication(monkeypatch) -> None:
+    sender = SMTPVerificationSender(
+        Settings(
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_security="starttls",
+            smtp_username="autoflow@example.com",
+            smtp_password="smtp-secret",
+        )
+    )
+    smtp = FakeSMTP()
+    monkeypatch.setattr("app.email_auth.smtplib.SMTP", lambda *_args, **_kwargs: smtp)
+
+    sender.probe()
+
+    assert smtp.calls == ["ehlo", "starttls", "ehlo", "login", "noop"]

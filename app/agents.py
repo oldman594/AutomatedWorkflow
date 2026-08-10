@@ -225,6 +225,20 @@ the implementation delivers the specified user value without material review fin
 criteria, or corrective actions."""
         return self._structured(model, "acceptance", prompt, AcceptanceOutput)
 
+    def probe(self, role: str) -> tuple[str, str, str]:
+        if self.settings.mock_llm:
+            raise AgentError("Mock LLM 模式未调用真实模型")
+        if role not in self.settings.agent_routes:
+            raise AgentError(f"Unknown agent role: {role}")
+        errors = [error for error in self.settings.route_errors() if error.startswith(f"{role}:")]
+        if errors:
+            raise AgentError("; ".join(errors))
+        model = self.settings.model_for(role)
+        output = self._text(model, role, "Reply with exactly AUTOFLOW_OK and nothing else.")
+        if not output.strip():
+            raise AgentError(f"{role} agent returned an empty probe response")
+        return self.settings.provider_for(role), model, output.strip()[:200]
+
     def _structured(self, model: str, role: str, prompt: str, schema: type[SchemaT]) -> SchemaT:
         provider = self.settings.provider_for(role)
         routed_model = self.settings.model_for(role, model)

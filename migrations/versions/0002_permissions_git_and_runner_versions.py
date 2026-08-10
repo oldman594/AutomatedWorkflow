@@ -4,7 +4,7 @@ Revision ID: 0002
 Revises: 0001
 """
 
-from alembic import op
+from alembic import context, op
 from sqlalchemy import Column, String, inspect, text
 
 from app.db_schema import git_integrations, permission_requests
@@ -19,6 +19,8 @@ def upgrade() -> None:
     bind = op.get_bind()
     permission_requests.create(bind=bind, checkfirst=True)
     git_integrations.create(bind=bind, checkfirst=True)
+    if context.is_offline_mode():
+        return
     columns = {column["name"] for column in inspect(bind).get_columns("runners")}
     if "version" not in columns:
         op.add_column(

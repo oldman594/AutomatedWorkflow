@@ -1,0 +1,34 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "AutoFlow Desktop",
+  "version": "1.1.0",
+  "identifier": "com.autoflow.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "controller",
+        "title": "AutoFlow Desktop",
+        "width": 980,
+        "height": 720,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "Run AutoFlow tasks against repositories on this computer",
+    "longDescription": "Desktop control plane for the AutoFlow Local Runner and task dashboard.",
+    "resources": ["resources/README.md", "resources/bin/*"]
+  }
+}

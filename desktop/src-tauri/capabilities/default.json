@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "controller-capability",
+  "description": "Capabilities for the trusted local controller window only",
+  "windows": ["controller"],
+  "permissions": [
+    "core:default",
+    "dialog:allow-open"
+  ]
+}

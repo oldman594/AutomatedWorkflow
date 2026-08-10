@@ -75,6 +75,45 @@ AUTOFLOW_AUTH_COOKIE_SECURE=true
 
 Runner 遇到超出普通执行范围的操作时会发送权限请求并暂停任务。任务详情页向 Owner 显示“批准授权”和“拒绝授权”；决定持久化到数据库，并在 Runner 断线重连后继续下发。拒绝授权会终止对应任务，审批记录会保留用于审计。
 
+## Tauri 桌面应用
+
+`desktop/` 是安装在用户电脑上的 Tauri 2 客户端。Rust 层管理系统密钥库、本地目录、Server readiness、Local Runner 进程和运行日志；任务工作台在不具备 Tauri IPC 权限的独立 WebView 中打开。服务端继续使用 Python/FastAPI，完整边界见 [桌面架构文档](docs/architecture/desktop-tauri.md)。
+
+Linux 开发环境先安装 Tauri 系统依赖、Node.js 22 和 Rust stable，然后运行：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential \
+  ca-certificates \
+  pkg-config \
+  libssl-dev \
+  libgtk-3-dev \
+  libwebkit2gtk-4.1-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  libdbus-1-dev
+
+cd desktop
+npm ci
+npm run dev
+```
+
+`npm run dev` 和 `npm run build` 会先检查 Linux 原生依赖。缺少依赖时会输出缺失的
+`pkg-config` 模块及对应的 Ubuntu/Debian 安装命令，而不是等待 Cargo 编译后失败。
+在 WSL 中，开发启动脚本默认使用 Mesa 软件渲染，避免 WebKitGTK 因缺少可用 DRI
+设备而输出 EGL/Zink 错误。已经正确配置 GPU 转发时可设置
+`AUTOFLOW_WSL_SOFTWARE_RENDERING=0` 恢复硬件渲染。
+
+开发时可将“Runner 可执行文件”设为项目虚拟环境中 `autoflow-runner` 的绝对路径。发布安装包使用 PyInstaller sidecar：
+
+```bash
+.venv/bin/python -m pip install 'pyinstaller>=6,<7'
+./scripts/build_desktop.sh
+```
+
+Runner Token 与各模型 API Key 只保存到 Windows Credential Manager、macOS Keychain 或 Linux Keyring/Secret Service；桌面配置 JSON 和远程任务网页均不会获得明文。安装包必须分别对 Tauri 主程序和 Runner sidecar 签名。
+
 ## Git 平台集成
 
 项目 Owner 可以配置 GitHub 或 GitLab 集成。生产环境先生成独立的 Fernet 密钥；平台 Token 加密后存入数据库，不会写入任务日志、Git remote 或命令参数：
@@ -89,7 +128,21 @@ PUT /api/projects/{project_id}/git-integration
 {"provider":"github","base_url":"https://api.github.com","repository":"owner/repository","token":"平台访问令牌"}
 ```
 
-GitLab 的 `base_url` 使用实例 API 地址，例如 `https://gitlab.example.com/api/v4`。产品验收通过后，Editor 可以在任务详情页创建 Pull Request 或 Merge Request。发布前会校验本地 HTTPS remote 与配置的仓库和平台主机完全匹配；Token 仅通过临时 `GIT_ASKPASS` 传给 Git。当前远程 Runner 任务必须在 Runner 主机侧发布，Server 不会访问用户电脑上的 worktree。
+保存前，服务端会调用平台的用户、仓库和成员权限 API，只有 Token 对目标仓库具备推送权限时才加密落库。也可以先调用 `POST /api/projects/{project_id}/git-integration/probe` 验证，或调用 `DELETE /api/projects/{project_id}/git-integration` 删除旧凭据。GitLab 的 `base_url` 使用实例 API 地址，例如 `https://gitlab.example.com/api/v4`。
+
+产品验收通过后，Editor 可以在任务详情页创建 Pull Request 或 Merge Request。发布前会校验本地 HTTPS remote 与配置的仓库和平台主机完全匹配；Token 仅通过临时 `GIT_ASKPASS` 传给 Git。创建接口超时后重试会查询并返回已存在的同分支 PR/MR。当前远程 Runner 任务必须在 Runner 主机侧发布，Server 不会访问用户电脑上的 worktree。
+
+管理员可通过控制台“服务集成”执行真实服务探测，也可调用 `POST /api/diagnostics/smtp` 和 `POST /api/diagnostics/llm/{role}`。SMTP 探测会完成连接、TLS 和认证但不发信；LLM 探测会产生一次最小真实模型调用，不会在 Mock 模式下伪造成功。
+
+真实外部联调测试默认跳过，避免误发邮件或向未知仓库发布。配置一次性测试账号和仓库后显式运行：
+
+```bash
+AUTOFLOW_RUN_EXTERNAL_TESTS=1 \
+AUTOFLOW_TEST_SMTP_RECIPIENT=you@example.com \
+.venv/bin/python -m pytest -m external -q
+```
+
+Git 验证使用 `AUTOFLOW_TEST_GIT_PROVIDER`、`AUTOFLOW_TEST_GIT_BASE_URL`、`AUTOFLOW_TEST_GIT_REPOSITORY`、`AUTOFLOW_TEST_GIT_TOKEN`。只有再显式设置 `AUTOFLOW_TEST_GIT_PUBLISH=1`、`AUTOFLOW_TEST_GIT_WORKTREE`、`AUTOFLOW_TEST_GIT_BRANCH` 和 `AUTOFLOW_TEST_GIT_BASE_BRANCH`，测试才会真实 push 并创建 PR/MR。
 
 Runner 协议使用统一 JSON Envelope：`id / type / timestamp / seq / runnerId / taskId / payload`。客户端持久化递增序号、最后处理的 Server 序号和未 ACK 消息；断线后发送 `Reconnect` 并重放未同步消息。支持 `Register`、`Heartbeat`、`Capability`、`TaskAssign`、`TaskProgress`、`TaskLog`、`TerminalOutput`、`AIChunk`、`FileChanged`、`PermissionRequest`、`CancelTask` 和任务终态等消息。
 
@@ -97,10 +150,21 @@ Runner 协议使用统一 JSON Envelope：`id / type / timestamp / seq / runnerI
 
 ## 任务沙箱
 
-构建、测试和功能运行默认在一次性 Docker 容器中执行。先在每台执行任务的 Server 或 Local Runner 主机上构建基础镜像：
+构建、测试和功能运行默认在一次性 OCI 容器中执行。默认使用 Docker，也可以显式配置 Podman。先在每台执行任务的 Server 或 Local Runner 主机上构建基础镜像：
 
 ```bash
 docker build -t autoflow-sandbox:latest sandbox/
+```
+
+使用 Podman 时执行 `podman build -t autoflow-sandbox:latest sandbox/`。默认的
+`AUTOFLOW_CONTAINER_RUNTIME=auto` 会优先使用 Docker，并在 Docker CLI 不存在时选择
+Podman；生产容器通过兼容 API socket 时应显式配置为 `docker`。
+
+使用 Podman 启动完整服务时，先启用兼容 API socket，再叠加 Podman override：
+
+```bash
+systemctl --user enable --now podman.socket
+podman compose -f compose.yaml -f compose.podman.yaml up -d --build
 ```
 
 沙箱只把当前任务 worktree 以读写方式挂载到 `/workspace`，容器根文件系统只读，默认禁用网络，并启用非 root 用户、`no-new-privileges`、能力删除、CPU、内存和 PID 限制。容器在命令完成后自动删除，超时后会被强制清理。
@@ -318,6 +382,7 @@ Coder 也可设置为 `openai`、`deepseek` 或 `codex_cli`。OpenAI API Key 必
 | `AUTOFLOW_MAX_CONTEXT_CHARS` | `80000` | 单阶段代码上下文字符上限 |
 | `AUTOFLOW_MAX_DOWNLOAD_BYTES` | `104857600` | 交付 ZIP 内文件总大小上限 |
 | `AUTOFLOW_SANDBOX_MODE` | `docker` | 命令执行模式：生产使用 `docker`，可信开发可显式使用 `host` |
+| `AUTOFLOW_CONTAINER_RUNTIME` | `auto` | OCI 容器运行时：自动选择，也可固定为 `docker` 或 `podman` |
 | `AUTOFLOW_SANDBOX_IMAGE` | `autoflow-sandbox:latest` | 每任务执行镜像 |
 | `AUTOFLOW_SANDBOX_NETWORK` | `none` | Docker 网络模式 |
 | `AUTOFLOW_SANDBOX_MEMORY` | `4g` | 单命令容器内存上限 |

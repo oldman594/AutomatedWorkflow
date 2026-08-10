@@ -815,6 +815,12 @@ class Storage:
         data.pop("created_by", None)
         return GitIntegrationInfo(**data), encrypted_token
 
+    def delete_git_integration(self, project_id: str) -> None:
+        with self._lock, self._connect() as db:
+            cursor = db.execute("DELETE FROM git_integrations WHERE project_id = ?", (project_id,))
+            if cursor.rowcount == 0:
+                raise KeyError(project_id)
+
     def lease_runner_task(self, runner_id: str, lease_seconds: int = 60) -> Task | None:
         job = self.lease_job(f"runner:{runner_id}", runner_id, lease_seconds)
         if job is None:

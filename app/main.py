@@ -12,13 +12,14 @@ from app import __version__
 from app.alerts import AlertDispatcher
 from app.api import router
 from app.auth import initialize_identity
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.observability import (
     configure_logging,
     configure_tracing,
     metrics_response,
     observe_request,
 )
+from app.sandbox import sandbox_readiness
 from app.storage import Storage
 from app.worker import DurableTaskWorker
 from app.workflow import WorkflowEngine
@@ -75,11 +76,45 @@ def metrics(request: Request):
 
 @app.get("/api/ready", include_in_schema=False)
 def ready(request: Request) -> dict[str, object]:
+    settings = get_settings()
     database = request.app.state.storage.ping()
     worker = request.app.state.worker.is_healthy()
-    if not database or not worker:
-        raise HTTPException(status_code=503, detail={"database": database, "worker": worker})
-    return {"status": "ready", "database": database, "worker": worker}
+    sandbox = sandbox_readiness(request.app.state.engine.shell_executor)
+    configuration = configuration_readiness(settings, request.app.state.storage)
+    if not database or not worker or not sandbox["ready"] or not configuration["ready"]:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "database": database,
+                "worker": worker,
+                "sandbox": sandbox,
+                "configuration": configuration,
+            },
+        )
+    return {
+        "status": "ready",
+        "database": database,
+        "worker": worker,
+        "sandbox": sandbox,
+        "configuration": configuration,
+    }
+
+
+def configuration_readiness(settings: Settings, storage: Storage) -> dict[str, object]:
+    errors: list[str] = []
+    if not settings.mock_llm:
+        errors.extend(settings.route_errors())
+    if settings.auth_enabled:
+        if storage.count_users() == 0:
+            errors.append("Authentication has no initialized user")
+        required = {
+            "AUTOFLOW_EMAIL_CODE_SECRET": settings.email_code_secret,
+            "AUTOFLOW_SMTP_HOST": settings.smtp_host,
+            "AUTOFLOW_SMTP_FROM_EMAIL": settings.smtp_from_email,
+            "AUTOFLOW_CREDENTIAL_ENCRYPTION_KEY": settings.credential_encryption_key,
+        }
+        errors.extend(f"{name} is not configured" for name, value in required.items() if not value)
+    return {"ready": not errors, "errors": errors}
 
 
 @app.get("/", include_in_schema=False)

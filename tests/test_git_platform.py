@@ -115,3 +115,94 @@ def test_git_publisher_rejects_mismatched_remote() -> None:
             "Title",
             "Body",
         )
+
+
+def test_github_credentials_validate_account_repository_and_push_permission() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/user":
+            return httpx.Response(200, json={"login": "developer"})
+        return httpx.Response(
+            200,
+            json={
+                "full_name": "acme/payments",
+                "default_branch": "main",
+                "permissions": {"push": True},
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = GitPublisher(client).validate_credentials(
+            GitProvider.GITHUB,
+            "https://api.github.com",
+            "acme/payments",
+            "github-secret-token",
+        )
+
+    assert result.account == "developer"
+    assert result.repository == "acme/payments"
+    assert result.default_branch == "main"
+    assert result.can_push is True
+
+
+def test_gitlab_credentials_require_developer_access() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v4/user":
+            return httpx.Response(200, json={"id": 17, "username": "reporter"})
+        if request.url.path.endswith("/members/all/17"):
+            return httpx.Response(200, json={"access_level": 20})
+        return httpx.Response(
+            200,
+            json={"path_with_namespace": "acme/payments", "default_branch": "main"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RepositoryError, match="does not have push permission"):
+            GitPublisher(client).validate_credentials(
+                GitProvider.GITLAB,
+                "https://gitlab.example.com/api/v4",
+                "acme/payments",
+                "gitlab-secret-token",
+            )
+
+
+def test_github_publish_recovers_existing_pull_request_after_422() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(422, json={"message": "A pull request already exists"})
+        return httpx.Response(
+            200,
+            json=[{"html_url": "https://github.com/acme/payments/pull/42", "number": 42}],
+        )
+
+    repository = FakeRepository("https://github.com/acme/payments.git")
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = GitPublisher(client).publish(
+            repository,  # type: ignore[arg-type]
+            integration(),
+            "github-secret-token",
+            "autoflow/payment",
+            "main",
+            "Implement payment",
+            "Validated change",
+        )
+
+    assert result.external_id == "42"
+
+
+def test_git_platform_error_does_not_expose_token() -> None:
+    token = "github-secret-token"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": f"rejected {token}"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RepositoryError) as caught:
+            GitPublisher(client).validate_credentials(
+                GitProvider.GITHUB,
+                "https://api.github.com",
+                "acme/payments",
+                token,
+            )
+
+    assert token not in str(caught.value)
+    assert "[REDACTED]" in str(caught.value)

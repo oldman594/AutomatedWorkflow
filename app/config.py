@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ProviderName = Literal["openai", "deepseek", "doubao", "qwen", "codex_cli"]
 SandboxMode = Literal["docker", "host"]
+ContainerRuntime = Literal["auto", "docker", "podman"]
 AGENT_ROLES = ("product", "reader", "planner", "architecture", "coder", "reviewer", "acceptance")
 
 
@@ -63,6 +64,7 @@ class Settings(BaseSettings):
     alert_timeout_seconds: float = 5.0
     credential_encryption_key: SecretStr | None = None
     sandbox_mode: SandboxMode = "docker"
+    container_runtime: ContainerRuntime = "auto"
     sandbox_image: str = "autoflow-sandbox:latest"
     sandbox_network: str = "none"
     sandbox_memory: str = "4g"

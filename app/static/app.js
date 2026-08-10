@@ -10,6 +10,7 @@ const state = {
   user: null,
   emailChallenge: null,
   emailCooldownTimer: null,
+  gitIntegration: null,
 };
 
 const stages = [
@@ -354,6 +355,105 @@ function closeCreate() {
   $("#form-error").classList.add("hidden");
 }
 
+async function openIntegrations() {
+  const overlay = $("#integration-overlay");
+  const select = $("#integration-project");
+  const writableProjects = state.projects.filter((project) => state.user?.is_admin || project.role === "owner");
+  const projects = writableProjects.length ? writableProjects : state.health?.auth_enabled ? [] : [{ id: "default", name: "Default" }];
+  select.innerHTML = projects.length
+    ? projects.map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`).join("")
+    : `<option value="">没有可管理项目</option>`;
+  $("#admin-diagnostics").classList.toggle("hidden", Boolean(state.user) && !state.user.is_admin);
+  overlay.classList.remove("hidden");
+  overlay.setAttribute("aria-hidden", "false");
+  await loadGitIntegration();
+  initIcons();
+}
+
+function closeIntegrations() {
+  $("#integration-overlay").classList.add("hidden");
+  $("#integration-overlay").setAttribute("aria-hidden", "true");
+  $("#git-token").value = "";
+}
+
+function setProbeStatus(selector, message, error = false) {
+  const element = $(selector);
+  element.textContent = message;
+  element.classList.remove("hidden");
+  element.classList.toggle("error", error);
+}
+
+async function loadGitIntegration() {
+  const projectId = $("#integration-project").value;
+  state.gitIntegration = null;
+  $("#git-token").value = "";
+  if (!projectId) {
+    setProbeStatus("#git-integration-status", "只有项目 Owner 可以管理 Git 发布配置", true);
+    return;
+  }
+  try {
+    const integration = await api(`/projects/${projectId}/git-integration`);
+    state.gitIntegration = integration;
+    $("#git-provider").value = integration.provider;
+    $("#git-base-url").value = integration.base_url;
+    $("#git-repository").value = integration.repository;
+    setProbeStatus("#git-integration-status", `已配置 ${integration.provider} · ${integration.repository}，Token 不回显`);
+  } catch (error) {
+    $("#git-repository").value = "";
+    setProbeStatus("#git-integration-status", error.message.includes("not configured") ? "当前项目尚未配置 Git 发布" : error.message, !error.message.includes("not configured"));
+  }
+}
+
+function gitIntegrationPayload() {
+  const form = $("#git-integration-form");
+  if (!form.reportValidity()) return null;
+  return {
+    provider: $("#git-provider").value,
+    base_url: $("#git-base-url").value,
+    repository: $("#git-repository").value,
+    token: $("#git-token").value,
+  };
+}
+
+async function runGitIntegration(action) {
+  const payload = gitIntegrationPayload();
+  if (!payload) return;
+  const projectId = $("#integration-project").value;
+  try {
+    if (action === "probe") {
+      const result = await api(`/projects/${projectId}/git-integration/probe`, { method: "POST", body: JSON.stringify(payload) });
+      setProbeStatus("#git-integration-status", `${result.account} · ${result.repository} · 默认分支 ${result.default_branch || "未知"} · 可推送`);
+    } else {
+      const result = await api(`/projects/${projectId}/git-integration`, { method: "PUT", body: JSON.stringify(payload) });
+      $("#git-token").value = "";
+      setProbeStatus("#git-integration-status", `验证通过并已保存 ${result.provider} · ${result.repository}`);
+    }
+  } catch (error) { setProbeStatus("#git-integration-status", error.message, true); }
+}
+
+async function deleteGitIntegration() {
+  const projectId = $("#integration-project").value;
+  try {
+    await api(`/projects/${projectId}/git-integration`, { method: "DELETE" });
+    state.gitIntegration = null;
+    $("#git-token").value = "";
+    $("#git-repository").value = "";
+    setProbeStatus("#git-integration-status", "Git 发布配置已删除");
+  } catch (error) { setProbeStatus("#git-integration-status", error.message, true); }
+}
+
+async function runServiceProbe(service) {
+  const button = service === "smtp" ? $("#probe-smtp") : $("#probe-llm");
+  const path = service === "smtp" ? "/diagnostics/smtp" : `/diagnostics/llm/${$("#llm-role").value}`;
+  button.disabled = true;
+  try {
+    const result = await api(path, { method: "POST" });
+    const route = result.provider ? `${result.provider} · ${result.model} · ` : "";
+    setProbeStatus("#diagnostic-status", `${route}${result.detail}`);
+  } catch (error) { setProbeStatus("#diagnostic-status", error.message, true); }
+  finally { button.disabled = false; }
+}
+
 async function submitTask(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -520,6 +620,18 @@ document.addEventListener("DOMContentLoaded", () => {
     window.location.reload();
   });
   $("#new-task-button").addEventListener("click", openCreate);
+  $("#open-integrations").addEventListener("click", openIntegrations);
+  $("#close-integrations").addEventListener("click", closeIntegrations);
+  $("#integration-overlay").addEventListener("click", (event) => { if (event.target.id === "integration-overlay") closeIntegrations(); });
+  $("#integration-project").addEventListener("change", loadGitIntegration);
+  $("#git-provider").addEventListener("change", () => {
+    $("#git-base-url").value = $("#git-provider").value === "github" ? "https://api.github.com" : "https://gitlab.com/api/v4";
+  });
+  $("#probe-git").addEventListener("click", () => runGitIntegration("probe"));
+  $("#delete-git").addEventListener("click", deleteGitIntegration);
+  $("#git-integration-form").addEventListener("submit", async (event) => { event.preventDefault(); await runGitIntegration("save"); });
+  $("#probe-smtp").addEventListener("click", () => runServiceProbe("smtp"));
+  $("#probe-llm").addEventListener("click", () => runServiceProbe("llm"));
   $$('[data-open-create]').forEach((button) => button.addEventListener("click", openCreate));
   $("#close-create").addEventListener("click", closeCreate);
   $("#cancel-create").addEventListener("click", closeCreate);
@@ -539,5 +651,5 @@ document.addEventListener("DOMContentLoaded", () => {
     try { await navigator.clipboard.writeText(path); toast("工作区路径已复制"); }
     catch (_) { toast(path); }
   });
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeCreate(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeCreate(); closeIntegrations(); } });
 });

@@ -30,6 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28,<1",
+  "httpx2>=2,<3",
   "mypy>=1.14,<2",
   "pip-tools>=7.4,<8",
   "pytest>=8.3,<9",
@@ -51,6 +52,7 @@ app = ["static/*.css", "static/*.html", "static/*.js"]
 migrations = ["script.py.mako"]
 
 [tool.pytest.ini_options]
+markers = ["external: opt-in tests that contact real external services"]
 testpaths = ["tests"]
 addopts = "-q"
 

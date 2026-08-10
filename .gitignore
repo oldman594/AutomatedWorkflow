@@ -14,3 +14,12 @@ data/*.db-*
 worktrees/
 backups/
 deploy/metrics-token
+desktop/node_modules/
+desktop/build/
+desktop/dist/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/icons/android/
+desktop/src-tauri/icons/ios/
+desktop/src-tauri/resources/bin/autoflow-runner
+desktop/src-tauri/resources/bin/autoflow-runner.exe

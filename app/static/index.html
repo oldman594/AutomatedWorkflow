@@ -47,6 +47,10 @@
         <i data-lucide="plus" aria-hidden="true"></i>
         新建任务
       </button>
+      <button id="open-integrations" class="sidebar-tool full-width" type="button">
+        <i data-lucide="plug-zap" aria-hidden="true"></i>
+        服务集成
+      </button>
 
       <div class="task-nav-head">
         <span>最近任务</span>
@@ -261,6 +265,65 @@
           </button>
         </footer>
       </form>
+    </div>
+  </div>
+
+  <div id="integration-overlay" class="overlay hidden" aria-hidden="true">
+    <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="integration-title">
+      <header class="drawer-header">
+        <div>
+          <span class="eyebrow">PRODUCTION INTEGRATIONS</span>
+          <h2 id="integration-title">服务集成与联调</h2>
+        </div>
+        <button id="close-integrations" class="icon-button" type="button" title="关闭">
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <div class="integration-body">
+        <section class="integration-section">
+          <div class="integration-heading">
+            <div><strong>GitHub / GitLab</strong><span>Token 验证通过后才会加密保存</span></div>
+            <i data-lucide="git-pull-request-arrow" aria-hidden="true"></i>
+          </div>
+          <form id="git-integration-form">
+            <label><span>项目</span><select id="integration-project" required></select></label>
+            <div class="form-row">
+              <label><span>平台</span><select id="git-provider" required><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label>
+              <label><span>API 地址</span><input id="git-base-url" type="url" value="https://api.github.com" required></label>
+            </div>
+            <label><span>仓库</span><input id="git-repository" placeholder="owner/repository" required spellcheck="false"></label>
+            <label><span>访问令牌</span><input id="git-token" type="password" autocomplete="off" placeholder="保存或轮换时填写" required></label>
+            <div class="integration-actions">
+              <button id="probe-git" class="secondary" type="button">验证连接</button>
+              <button id="delete-git" class="secondary danger" type="button">删除配置</button>
+              <button class="primary" type="submit">验证并保存</button>
+            </div>
+          </form>
+          <p id="git-integration-status" class="probe-status hidden"></p>
+        </section>
+
+        <section id="admin-diagnostics" class="integration-section hidden">
+          <div class="integration-heading">
+            <div><strong>运行服务诊断</strong><span>发起真实连接，不使用 Mock 结果</span></div>
+            <i data-lucide="activity" aria-hidden="true"></i>
+          </div>
+          <div class="diagnostic-row">
+            <span>SMTP 连接、TLS 与认证</span>
+            <button id="probe-smtp" class="secondary" type="button">测试 SMTP</button>
+          </div>
+          <div class="diagnostic-row llm-probe-row">
+            <select id="llm-role">
+              <option value="product">产品经理</option><option value="reader">代码阅读</option>
+              <option value="planner">任务规划</option><option value="architecture">架构设计</option>
+              <option value="coder">编码</option><option value="reviewer">代码审查</option>
+              <option value="acceptance">产品验收</option>
+            </select>
+            <button id="probe-llm" class="secondary" type="button">测试真实 LLM</button>
+          </div>
+          <p id="diagnostic-status" class="probe-status hidden"></p>
+        </section>
+      </div>
     </div>
   </div>
 

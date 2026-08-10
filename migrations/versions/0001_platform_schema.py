@@ -4,7 +4,7 @@ Revision ID: 0001
 Revises: None
 """
 
-from alembic import op
+from alembic import context, op
 from sqlalchemy import Column, Integer, String, inspect, text
 
 from app.db_schema import metadata
@@ -16,6 +16,8 @@ depends_on = None
 
 
 def _add_legacy_columns() -> None:
+    if context.is_offline_mode():
+        return
     bind = op.get_bind()
     inspector = inspect(bind)
     if "tasks" in inspector.get_table_names():

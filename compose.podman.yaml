@@ -1,0 +1,7 @@
+services:
+  autoflow:
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      AUTOFLOW_CONTAINER_RUNTIME: docker
+    volumes:
+      - ${XDG_RUNTIME_DIR:?set XDG_RUNTIME_DIR}/podman/podman.sock:/var/run/docker.sock

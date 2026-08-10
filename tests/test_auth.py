@@ -4,9 +4,12 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+from app.agents import AgentClient
 from app.config import get_settings
 from app.email_auth import SMTPVerificationSender
+from app.git_platform import GitPublisher
 from app.main import app
+from app.models import IntegrationProbe
 
 
 def configure_auth(tmp_path: Path, monkeypatch) -> dict[str, str]:
@@ -35,6 +38,18 @@ def configure_auth(tmp_path: Path, monkeypatch) -> dict[str, str]:
         sent_codes[recipient] = code
 
     monkeypatch.setattr(SMTPVerificationSender, "send_code", capture_code)
+    monkeypatch.setattr(
+        GitPublisher,
+        "validate_credentials",
+        lambda _publisher, provider, _base_url, repository, _token: IntegrationProbe(
+            service="git",
+            ok=True,
+            detail="verified",
+            provider=provider.value,
+            repository=repository,
+            can_push=True,
+        ),
+    )
     get_settings.cache_clear()
     return sent_codes
 
@@ -54,7 +69,7 @@ def test_email_code_creates_session_and_project_owner(tmp_path: Path, monkeypatc
     with TestClient(app) as client:
         page = client.get("/").text
         assert 'id="email-auth-form"' in page
-        assert 'type="password"' not in page
+        assert 'autocomplete="current-password"' not in page
         assert client.post("/api/auth/login", json={}).status_code == 404
         assert client.post("/api/auth/register", json={}).status_code == 404
 
@@ -195,6 +210,12 @@ def test_email_code_limits_requests_across_different_emails(tmp_path: Path, monk
 
 def test_email_login_project_rbac_and_per_runner_token(tmp_path: Path, monkeypatch) -> None:
     sent_codes = configure_auth(tmp_path, monkeypatch)
+    monkeypatch.setattr(SMTPVerificationSender, "probe", lambda _sender: "smtp verified")
+    monkeypatch.setattr(
+        AgentClient,
+        "probe",
+        lambda _client, role: ("deepseek", "deepseek-chat", f"AUTOFLOW_OK:{role}"),
+    )
     monkeypatch.setenv("AUTOFLOW_EMAIL_CODE_COOLDOWN_SECONDS", "0")
     get_settings.cache_clear()
     with TestClient(app) as client:
@@ -202,6 +223,10 @@ def test_email_login_project_rbac_and_per_runner_token(tmp_path: Path, monkeypat
         login = email_login(client, sent_codes, "admin@example.com")
         assert login.status_code == 200
         assert client.get("/api/auth/me").json()["is_admin"] is True
+        assert client.post("/api/diagnostics/smtp").json()["ok"] is True
+        llm_probe = client.post("/api/diagnostics/llm/reader")
+        assert llm_probe.status_code == 200
+        assert llm_probe.json()["provider"] == "deepseek"
 
         project = client.post("/api/projects", json={"name": "Payments", "slug": "payments"}).json()
         project_id = project["id"]
@@ -254,6 +279,7 @@ def test_email_login_project_rbac_and_per_runner_token(tmp_path: Path, monkeypat
         client.post("/api/auth/logout")
         viewer_login = email_login(client, sent_codes, "viewer@example.com")
         assert viewer_login.status_code == 200
+        assert client.post("/api/diagnostics/smtp").status_code == 403
         assert [item["id"] for item in client.get("/api/projects").json()] == [project_id]
         forbidden = client.post(
             "/api/tasks",
